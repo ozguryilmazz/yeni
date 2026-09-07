@@ -1,6 +1,7 @@
 from decimal import Decimal
 from uuid import UUID
 
+from PySide6.QtCore import QLocale
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -283,6 +284,10 @@ class MainWindow(QMainWindow):
         self.amount_input = QDoubleSpinBox()
         self.amount_input.setDecimals(8)
         self.amount_input.setMaximum(1_000_000_000)
+        # Sistem yereli (ör. Türkçe Windows) ondalık ayracı olarak "," bekleyebilir;
+        # bu widget her zaman "." ile çalışsın diye locale sabitleniyor (aksi halde
+        # "0.04" gibi bir değer yanlış ayrıştırılıp farklı bir miktara dönüşebiliyor).
+        self.amount_input.setLocale(QLocale(QLocale.Language.C))
 
         self.transfer_button = QPushButton("Transfer Et")
         self.transfer_button.clicked.connect(self._handle_transfer)
