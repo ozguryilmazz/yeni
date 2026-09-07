@@ -2,14 +2,18 @@
 
 Genel plan için bkz. [PLAN.md](./PLAN.md).
 
-## Bu Etapta Yapılanlar (Faz 0 + Faz 1)
+## Bu Etapta Yapılanlar (Faz 0 + Faz 1 + Faz 2)
 
 - FastAPI backend iskeleti (`backend/`)
 - React + TypeScript frontend iskeleti (`frontend/`)
 - PostgreSQL + Alembic migration altyapısı
 - Kullanıcı kayıt / giriş / JWT (access + refresh token) auth akışı
+- Binance API key/secret'ı DB'de Fernet ile şifreli saklama (`ApiCredential`)
+- Bağlama sırasında Binance `/sapi/v1/account/apiRestrictions` ile izin doğrulaması:
+  **withdrawal izni açık key'ler otomatik reddedilir**
+- Bağlı hesapları listeleme / kaldırma; Dashboard'da bağlama formu
 
-Henüz Binance API bağlantısı, bakiye görüntüleme ve transfer özellikleri **eklenmedi** — bunlar sıradaki fazlar.
+Henüz bakiye görüntüleme ve transfer özellikleri **eklenmedi** — bunlar sıradaki fazlar (Faz 3-4).
 
 ## Geliştirme Ortamını Ayağa Kaldırma
 
@@ -51,9 +55,10 @@ npm run dev
 `backend/.env.example` dosyasına bakın. Özellikle:
 
 - `JWT_SECRET_KEY`: `openssl rand -hex 32` ile üretin.
-- `ENCRYPTION_MASTER_KEY`: Binance API secret'larını DB'de şifrelemek için kullanılacak (ileriki fazda). `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` ile üretin.
+- `ENCRYPTION_MASTER_KEY`: Binance API secret'larını DB'de şifrelemek için kullanılır (herhangi bir uzunlukta rastgele string olabilir, `openssl rand -hex 32` ile üretin — Fernet key'e otomatik türetilir).
 
 ## Güvenlik
 
-- Binance API key'leri asla plaintext saklanmaz/loglanmaz (bir sonraki fazda eklenecek).
-- Withdrawal (para çekme) izni olan API key'lerin bağlanması engellenecek.
+- Binance API key/secret'ları DB'de Fernet (AES-128-CBC + HMAC) ile şifreli saklanır, hiçbir response/log'da plaintext dönmez.
+- Bağlama isteğinde Binance'dan gerçek API key izinleri sorgulanır (`apiRestrictions`); withdrawal izni açık olan key'ler **reddedilir**.
+- Kullanıcıya Binance panelinden IP whitelist kullanması önerilir.
