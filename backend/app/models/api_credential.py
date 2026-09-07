@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
@@ -20,4 +20,9 @@ class ApiCredential(Base):
     encrypted_api_secret: Mapped[str] = mapped_column(Text, nullable=False)
     can_withdraw: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     permissions_verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Python tarafında (mikrosaniye hassasiyetinde) üretilir; DB'nin CURRENT_TIMESTAMP'i
+    # (özellikle SQLite'ta) saniye çözünürlüğünde olduğundan aynı saniyede bağlanan
+    # hesapların sıralamasını belirsizleştirebiliyor.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=func.now()
+    )

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text, func
@@ -26,4 +26,9 @@ class Transfer(Base):
     binance_tran_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Python tarafında (mikrosaniye hassasiyetinde) üretilir; DB'nin CURRENT_TIMESTAMP'i
+    # (özellikle SQLite'ta) saniye çözünürlüğünde olduğundan aynı saniyede oluşan
+    # transferlerin sıralamasını belirsizleştirebiliyor.
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=func.now()
+    )

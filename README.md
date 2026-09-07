@@ -22,6 +22,19 @@ Genel plan için bkz. [PLAN.md](./PLAN.md).
 Bu, planın (bkz. PLAN.md) Faz 1 hedefini tamamlıyor: bakiye görüntüleme + cüzdanlar
 arası transfer. **İşlem (trading) özellikleri henüz eklenmedi** — sıradaki faz (Faz 6).
 
+### Faz 5 — Güvenlik & Kalite
+
+- `/api/auth/login` ve `/api/auth/register` için IP bazlı rate limiting (10/dakika,
+  brute-force koruması, `slowapi`)
+- Transfer geçmişi (`transfers` tablosu) her denemeyi (başarılı/başarısız) durum ve
+  hata mesajıyla kaydederek audit log görevi görür
+- `backend/tests/`: pytest test paketi — auth (register/login/refresh/me), credentials
+  (bağlama/izin reddi/silme), wallet (bakiye normalize etme, hata durumları), transfers
+  (yön eşlemesi, başarı/başarısızlık loglama, geçmiş sıralaması) ve rate limit senaryoları
+  Binance çağrıları mock'lanarak test edilir (19 test, `pytest` ile çalıştırılır)
+
+Playwright E2E testleri henüz eklenmedi.
+
 ## Geliştirme Ortamını Ayağa Kaldırma
 
 ### Docker Compose ile (önerilen)
