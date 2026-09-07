@@ -72,3 +72,27 @@ body {
   color: #9aa0aa;
   font-size: 0.9rem;
 }
+
+.section-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.wallet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+}
+
+.wallet-card {
+  background: #161a22;
+  border: 1px solid #262a33;
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.wallet-card h3 {
+  margin-top: 0;
+}

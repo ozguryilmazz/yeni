@@ -23,13 +23,7 @@ def _sign(params: dict, api_secret: str) -> dict:
     return {**params, "signature": signature}
 
 
-async def _signed_get(base_url: str, path: str, api_key: str, api_secret: str) -> dict:
-    params = _sign({"timestamp": int(time.time() * 1000), "recvWindow": 5000}, api_secret)
-    headers = {"X-MBX-APIKEY": api_key}
-
-    async with httpx.AsyncClient(base_url=base_url, timeout=10) as client:
-        response = await client.get(path, params=params, headers=headers)
-
+def _raise_for_error(response: httpx.Response) -> None:
     if response.status_code != 200:
         try:
             data = response.json()
@@ -37,6 +31,26 @@ async def _signed_get(base_url: str, path: str, api_key: str, api_secret: str) -
             data = {}
         raise BinanceAPIError(data.get("msg", "Binance API isteği başarısız oldu"), data.get("code"))
 
+
+async def _signed_get(base_url: str, path: str, api_key: str, api_secret: str) -> dict:
+    params = _sign({"timestamp": int(time.time() * 1000), "recvWindow": 5000}, api_secret)
+    headers = {"X-MBX-APIKEY": api_key}
+
+    async with httpx.AsyncClient(base_url=base_url, timeout=10) as client:
+        response = await client.get(path, params=params, headers=headers)
+
+    _raise_for_error(response)
+    return response.json()
+
+
+async def _signed_post(base_url: str, path: str, api_key: str, api_secret: str) -> list | dict:
+    params = _sign({"timestamp": int(time.time() * 1000), "recvWindow": 5000}, api_secret)
+    headers = {"X-MBX-APIKEY": api_key}
+
+    async with httpx.AsyncClient(base_url=base_url, timeout=10) as client:
+        response = await client.post(path, params=params, headers=headers)
+
+    _raise_for_error(response)
     return response.json()
 
 
@@ -53,3 +67,8 @@ async def get_spot_account(api_key: str, api_secret: str) -> dict:
 
 async def get_futures_account(api_key: str, api_secret: str) -> dict:
     return await _signed_get(settings.binance_futures_base_url, "/fapi/v2/account", api_key, api_secret)
+
+
+async def get_funding_wallet(api_key: str, api_secret: str) -> list[dict]:
+    result = await _signed_post(settings.binance_base_url, "/sapi/v1/asset/get-funding-asset", api_key, api_secret)
+    return result if isinstance(result, list) else []

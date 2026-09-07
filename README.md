@@ -2,7 +2,7 @@
 
 Genel plan için bkz. [PLAN.md](./PLAN.md).
 
-## Bu Etapta Yapılanlar (Faz 0 + Faz 1 + Faz 2)
+## Bu Etapta Yapılanlar (Faz 0 + Faz 1 + Faz 2 + Faz 3)
 
 - FastAPI backend iskeleti (`backend/`)
 - React + TypeScript frontend iskeleti (`frontend/`)
@@ -12,8 +12,11 @@ Genel plan için bkz. [PLAN.md](./PLAN.md).
 - Bağlama sırasında Binance `/sapi/v1/account/apiRestrictions` ile izin doğrulaması:
   **withdrawal izni açık key'ler otomatik reddedilir**
 - Bağlı hesapları listeleme / kaldırma; Dashboard'da bağlama formu
+- `GET /api/wallet/balances`: Spot, Futures (USDⓈ-M) ve Funding cüzdan bakiyelerini
+  Binance'dan çekip normalize eder (sıfır bakiyeler filtrelenir)
+- Dashboard'da Spot/Futures/Funding kartları + yenile butonu
 
-Henüz bakiye görüntüleme ve transfer özellikleri **eklenmedi** — bunlar sıradaki fazlar (Faz 3-4).
+Henüz cüzdanlar arası transfer özelliği **eklenmedi** — sıradaki faz (Faz 4).
 
 ## Geliştirme Ortamını Ayağa Kaldırma
 
