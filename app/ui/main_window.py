@@ -315,8 +315,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Transfer", "Önce bir Binance hesabı bağlayın.")
             return
 
-        from_wallet: WalletType = self.from_wallet_combo.currentData()
-        to_wallet: WalletType = self.to_wallet_combo.currentData()
+        # PySide6, str tabanlı bir Enum'u combo box itemData'sında saklarken QVariant
+        # dönüşümü sırasında sessizce düz bir str'e indirgeyebiliyor; WalletType(...)
+        # ile normalize ederek hem gerçek enum hem düz string dönmesi durumunu kapsıyoruz.
+        from_wallet = WalletType(self.from_wallet_combo.currentData())
+        to_wallet = WalletType(self.to_wallet_combo.currentData())
         if from_wallet == to_wallet:
             QMessageBox.warning(self, "Transfer", "Kaynak ve hedef cüzdan aynı olamaz")
             return

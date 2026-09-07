@@ -3,6 +3,8 @@ import tempfile
 
 _TEST_DATA_DIR = tempfile.mkdtemp(prefix="binance_wallet_test_")
 os.environ.setdefault("BINANCE_APP_DATA_DIR", _TEST_DATA_DIR)
+# Qt widget testleri ekran/masaüstü olmadan (CI, bu sandbox) çalışabilsin diye.
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
 
@@ -31,6 +33,13 @@ def db():
 @pytest.fixture
 def user(db):
     return register_user(db, "test@example.com", "password123")
+
+
+@pytest.fixture(scope="session")
+def qapp():
+    from PySide6.QtWidgets import QApplication
+
+    yield QApplication.instance() or QApplication([])
 
 
 def connect_credential(db, user, can_withdraw: bool = False):
