@@ -2,7 +2,7 @@
 
 Genel plan için bkz. [PLAN.md](./PLAN.md).
 
-## Bu Etapta Yapılanlar (Faz 0 + Faz 1 + Faz 2 + Faz 3)
+## Bu Etapta Yapılanlar (Faz 0-4 tamamlandı)
 
 - FastAPI backend iskeleti (`backend/`)
 - React + TypeScript frontend iskeleti (`frontend/`)
@@ -15,8 +15,12 @@ Genel plan için bkz. [PLAN.md](./PLAN.md).
 - `GET /api/wallet/balances`: Spot, Futures (USDⓈ-M) ve Funding cüzdan bakiyelerini
   Binance'dan çekip normalize eder (sıfır bakiyeler filtrelenir)
 - Dashboard'da Spot/Futures/Funding kartları + yenile butonu
+- `POST /api/transfers`: Spot ⇄ Futures ⇄ Funding arasında coin transferi
+  (Binance universal transfer API, `transfers` tablosunda geçmiş kaydı)
+- `GET /api/transfers`: transfer geçmişi; Dashboard'da transfer formu + geçmiş tablosu
 
-Henüz cüzdanlar arası transfer özelliği **eklenmedi** — sıradaki faz (Faz 4).
+Bu, planın (bkz. PLAN.md) Faz 1 hedefini tamamlıyor: bakiye görüntüleme + cüzdanlar
+arası transfer. **İşlem (trading) özellikleri henüz eklenmedi** — sıradaki faz (Faz 6).
 
 ## Geliştirme Ortamını Ayağa Kaldırma
 
@@ -65,3 +69,4 @@ npm run dev
 - Binance API key/secret'ları DB'de Fernet (AES-128-CBC + HMAC) ile şifreli saklanır, hiçbir response/log'da plaintext dönmez.
 - Bağlama isteğinde Binance'dan gerçek API key izinleri sorgulanır (`apiRestrictions`); withdrawal izni açık olan key'ler **reddedilir**.
 - Kullanıcıya Binance panelinden IP whitelist kullanması önerilir.
+- Uygulama Binance **mainnet** ile çalışır; her transfer gerçek fon hareketi yaratır.

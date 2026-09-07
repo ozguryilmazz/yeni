@@ -6,8 +6,22 @@ import {
   deleteCredential,
   listCredentials,
 } from "../api/credentials";
+import { createTransfer, listTransfers, Transfer, WalletType } from "../api/transfers";
 import { fetchBalances, WalletSummary } from "../api/wallet";
 import { useAuth } from "../context/AuthContext";
+
+const WALLET_LABELS: Record<WalletType, string> = {
+  SPOT: "Spot",
+  USDM_FUTURES: "Futures (USDⓈ-M)",
+  FUNDING: "Funding",
+};
+const WALLET_OPTIONS = Object.keys(WALLET_LABELS) as WalletType[];
+
+const TRANSFER_STATUS_LABELS: Record<Transfer["status"], string> = {
+  PENDING: "Beklemede",
+  SUCCESS: "Başarılı",
+  FAILED: "Başarısız",
+};
 
 function extractErrorMessage(err: unknown, fallback: string): string {
   const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
@@ -33,6 +47,15 @@ export default function Dashboard() {
   const [submitting, setSubmitting] = useState(false);
   const [loadingList, setLoadingList] = useState(true);
 
+  const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [transfersLoading, setTransfersLoading] = useState(true);
+  const [transferFrom, setTransferFrom] = useState<WalletType>("SPOT");
+  const [transferTo, setTransferTo] = useState<WalletType>("USDM_FUTURES");
+  const [transferAsset, setTransferAsset] = useState("USDT");
+  const [transferAmount, setTransferAmount] = useState("");
+  const [transferError, setTransferError] = useState<string | null>(null);
+  const [transferSubmitting, setTransferSubmitting] = useState(false);
+
   const refreshCredentials = async () => {
     setLoadingList(true);
     try {
@@ -50,8 +73,18 @@ export default function Dashboard() {
     }
   };
 
+  const refreshTransfers = async () => {
+    setTransfersLoading(true);
+    try {
+      setTransfers(await listTransfers());
+    } finally {
+      setTransfersLoading(false);
+    }
+  };
+
   useEffect(() => {
     refreshCredentials();
+    refreshTransfers();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -94,6 +127,33 @@ export default function Dashboard() {
   const handleDelete = async (id: string) => {
     await deleteCredential(id);
     await refreshCredentials();
+  };
+
+  const handleTransfer = async (event: FormEvent) => {
+    event.preventDefault();
+    setTransferError(null);
+
+    if (transferFrom === transferTo) {
+      setTransferError("Kaynak ve hedef cüzdan aynı olamaz");
+      return;
+    }
+
+    setTransferSubmitting(true);
+    try {
+      await createTransfer({
+        credential_id: selectedCredentialId || undefined,
+        asset: transferAsset.trim().toUpperCase(),
+        amount: transferAmount,
+        from_wallet: transferFrom,
+        to_wallet: transferTo,
+      });
+      setTransferAmount("");
+      await Promise.all([refreshTransfers(), loadBalances()]);
+    } catch (err) {
+      setTransferError(extractErrorMessage(err, "Transfer başarısız oldu"));
+    } finally {
+      setTransferSubmitting(false);
+    }
   };
 
   return (
@@ -274,7 +334,91 @@ export default function Dashboard() {
         </form>
       </section>
 
-      <p className="hint">Cüzdanlar arası transfer ekranı bir sonraki fazda burada görünecek.</p>
+      <section>
+        <h2>Cüzdanlar Arası Transfer</h2>
+        {credentials.length === 0 ? (
+          <p className="hint">Transfer yapmak için önce bir Binance hesabı bağlayın.</p>
+        ) : (
+          <form onSubmit={handleTransfer}>
+            <label>
+              Kaynak Cüzdan
+              <select value={transferFrom} onChange={(e) => setTransferFrom(e.target.value as WalletType)}>
+                {WALLET_OPTIONS.map((w) => (
+                  <option key={w} value={w}>
+                    {WALLET_LABELS[w]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Hedef Cüzdan
+              <select value={transferTo} onChange={(e) => setTransferTo(e.target.value as WalletType)}>
+                {WALLET_OPTIONS.map((w) => (
+                  <option key={w} value={w}>
+                    {WALLET_LABELS[w]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Coin
+              <input
+                value={transferAsset}
+                onChange={(e) => setTransferAsset(e.target.value)}
+                required
+                placeholder="USDT"
+              />
+            </label>
+            <label>
+              Miktar
+              <input
+                type="number"
+                step="any"
+                min="0"
+                value={transferAmount}
+                onChange={(e) => setTransferAmount(e.target.value)}
+                required
+              />
+            </label>
+            {transferError && <p className="error">{transferError}</p>}
+            <button type="submit" disabled={transferSubmitting}>
+              {transferSubmitting ? "Transfer ediliyor..." : "Transfer Et"}
+            </button>
+          </form>
+        )}
+
+        <h3>Transfer Geçmişi</h3>
+        {transfersLoading ? (
+          <p>Yükleniyor...</p>
+        ) : transfers.length === 0 ? (
+          <p className="hint">Henüz transfer yapılmadı.</p>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Tarih</th>
+                <th>Coin</th>
+                <th>Miktar</th>
+                <th>Yön</th>
+                <th>Durum</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transfers.map((t) => (
+                <tr key={t.id}>
+                  <td>{new Date(t.created_at).toLocaleString("tr-TR")}</td>
+                  <td>{t.asset}</td>
+                  <td>{t.amount}</td>
+                  <td>
+                    {WALLET_LABELS[t.from_wallet]} → {WALLET_LABELS[t.to_wallet]}
+                  </td>
+                  <td title={t.error_message ?? undefined}>{TRANSFER_STATUS_LABELS[t.status]}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
     </div>
   );
 }

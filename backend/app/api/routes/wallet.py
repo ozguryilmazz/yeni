@@ -3,10 +3,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.api.credential_lookup import get_user_credential
 from app.api.deps import get_current_user
 from app.core.crypto import decrypt_secret
 from app.database import get_db
-from app.models.api_credential import ApiCredential
 from app.models.user import User
 from app.schemas.wallet import AssetBalance, FuturesBalance, WalletSummary
 from app.services.binance_client import (
@@ -19,29 +19,13 @@ from app.services.binance_client import (
 router = APIRouter()
 
 
-def _get_credential(db: Session, current_user: User, credential_id: UUID | None) -> ApiCredential:
-    query = db.query(ApiCredential).filter(ApiCredential.user_id == current_user.id)
-    credential = (
-        query.filter(ApiCredential.id == credential_id).first()
-        if credential_id is not None
-        else query.order_by(ApiCredential.created_at.desc()).first()
-    )
-
-    if credential is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Bağlı bir Binance hesabı bulunamadı. Önce bir API key bağlayın.",
-        )
-    return credential
-
-
 @router.get("/balances", response_model=WalletSummary)
 async def get_balances(
     credential_id: UUID | None = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> WalletSummary:
-    credential = _get_credential(db, current_user, credential_id)
+    credential = get_user_credential(db, current_user, credential_id)
     api_key = decrypt_secret(credential.encrypted_api_key)
     api_secret = decrypt_secret(credential.encrypted_api_secret)
 

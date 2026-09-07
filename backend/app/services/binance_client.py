@@ -43,8 +43,11 @@ async def _signed_get(base_url: str, path: str, api_key: str, api_secret: str) -
     return response.json()
 
 
-async def _signed_post(base_url: str, path: str, api_key: str, api_secret: str) -> list | dict:
-    params = _sign({"timestamp": int(time.time() * 1000), "recvWindow": 5000}, api_secret)
+async def _signed_post(
+    base_url: str, path: str, api_key: str, api_secret: str, extra_params: dict | None = None
+) -> list | dict:
+    base_params = {"timestamp": int(time.time() * 1000), "recvWindow": 5000, **(extra_params or {})}
+    params = _sign(base_params, api_secret)
     headers = {"X-MBX-APIKEY": api_key}
 
     async with httpx.AsyncClient(base_url=base_url, timeout=10) as client:
@@ -72,3 +75,12 @@ async def get_futures_account(api_key: str, api_secret: str) -> dict:
 async def get_funding_wallet(api_key: str, api_secret: str) -> list[dict]:
     result = await _signed_post(settings.binance_base_url, "/sapi/v1/asset/get-funding-asset", api_key, api_secret)
     return result if isinstance(result, list) else []
+
+
+async def create_universal_transfer(
+    api_key: str, api_secret: str, transfer_type: str, asset: str, amount: str
+) -> dict:
+    """POST /sapi/v1/asset/transfer — cüzdanlar arası (spot/futures/funding) coin transferi."""
+    extra_params = {"type": transfer_type, "asset": asset, "amount": amount}
+    result = await _signed_post(settings.binance_base_url, "/sapi/v1/asset/transfer", api_key, api_secret, extra_params)
+    return result if isinstance(result, dict) else {}
