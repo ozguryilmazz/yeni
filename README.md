@@ -10,6 +10,11 @@ uygulaması**. Genel yol haritası için bkz. [PLAN.md](./PLAN.md).
 
 ## Özellikler
 
+- İki sekmeli ana pencere: **Piyasa** (herkese açık futures verisi) ve **Transferler**
+  (hesap bağlama, bakiyeler, cüzdanlar arası transfer)
+- **Piyasa** sekmesi: USDT-M perpetual futures'ta işlem gören tüm coinleri seçilen dönemdeki
+  (son 1 saat / 4 saat / 24 saat) işlem hacmine göre listeler; sütun başlıklarına tıklayarak
+  sıralama değiştirilebilir. Binance hesabı bağlamaya gerek yok (public veri)
 - Aynı bilgisayarda birden fazla profil/hesap için basit bir giriş sistemi (local, şifreler bcrypt ile hash'lenir)
 - Binance API key/secret'ı local SQLite'ta Fernet ile şifreli saklama; ana şifreleme
   anahtarı işletim sisteminin güvenli kimlik bilgisi deposunda tutulur (Windows Credential
@@ -37,16 +42,20 @@ macOS'ta `~/Library/Application Support/BinanceWalletManager` / Windows'ta
 ## Kullanım
 
 1. Açılan pencerede **Kayıt Ol** sekmesinden bir profil oluşturun (e-posta + şifre, en az 8 karakter).
-2. **Binance Hesabı Bağla** ile bir API key/secret girin.
+2. Ana pencerede **Piyasa** sekmesi hemen açılır — Binance hesabı bağlamadan futures
+   coinlerini hacme göre inceleyebilirsiniz.
+3. **Transferler** sekmesine geçip **Binance Hesabı Bağla** ile bir API key/secret girin.
 
    ⚠️ **Önemli:** Binance hesabınızda yeni bir API key oluştururken:
    - Sadece **Enable Reading** (+ istersen Spot/Futures trading) izni açın
+   - Cüzdanlar arası transfer yapacaksanız **Permits Universal Transfer** iznini de açın
+     (bu izin kapalıyken transfer "not authorized" hatası verir)
    - **Enable Withdrawals'ı kesinlikle açmayın** — uygulama böyle key'leri zaten
      otomatik reddediyor, ama önlem olarak siz de kapalı tutun
    - Mümkünse IP whitelist ekleyin
 
-3. Bağlandıktan sonra Spot/Futures/Funding bakiyelerinizi **Yenile** butonuyla görün.
-4. **Cüzdanlar Arası Transfer** bölümünden küçük bir miktarla (ör. 1 USDT) deneme yapın —
+4. Bağlandıktan sonra Spot/Futures/Funding bakiyelerinizi **Yenile** butonuyla görün.
+5. **Cüzdanlar Arası Transfer** bölümünden küçük bir miktarla (ör. 1 USDT) deneme yapın —
    bu gerçek bir fon hareketi yaratır.
 
 ## Proje Yapısı
@@ -59,13 +68,15 @@ app/
   models.py           # User, ApiCredential, Transfer
   security.py         # Parola hash/doğrulama (bcrypt)
   crypto.py           # API secret şifreleme (Fernet + OS keyring)
-  binance_client.py   # İmzalı Binance REST istekleri (senkron)
+  binance_client.py   # İmzalı Binance REST istekleri (senkron) + public piyasa verisi
   transfer_types.py   # Cüzdan tipleri ve Binance transfer tip eşlemesi
-  repository.py       # İş mantığı (auth, credential, wallet, transfer)
+  repository.py       # İş mantığı (auth, credential, wallet, transfer, piyasa verisi)
   workers.py          # Ağ çağrılarını arayüzü kilitlemeden çalıştıran QThread'ler
   ui/
     login_window.py   # Giriş / kayıt ekranı
-    main_window.py     # Ana pencere: bağlı hesaplar, bakiyeler, transfer
+    main_window.py     # Ana pencere: sekmeler (Piyasa, Transferler) + üst bilgi
+    market_tab.py       # Piyasa sekmesi: futures hacim tablosu (1s/4s/24s, sıralanabilir)
+    transfers_tab.py    # Transferler sekmesi: bağlı hesaplar, bakiyeler, transfer
 tests/                # pytest paketi (Binance çağrıları mock'lanarak)
 ```
 
@@ -76,8 +87,9 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-19 test: auth (kayıt/giriş), credential bağlama (withdrawal reddi, şifreleme, silme),
-bakiye normalize etme, transfer (yön eşlemesi, başarı/başarısızlık loglama, geçmiş).
+34 test: auth (kayıt/giriş), credential bağlama (withdrawal reddi, şifreleme, silme),
+bakiye normalize etme, transfer (yön eşlemesi, başarı/başarısızlık loglama, geçmiş),
+piyasa verisi (sembol filtreleme, hacim hesaplama, sıralama) ve sekme yapısı.
 
 ## Güvenlik
 

@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import urlencode
 
 import httpx
@@ -81,3 +82,73 @@ def create_universal_transfer(api_key: str, api_secret: str, transfer_type: str,
     extra_params = {"type": transfer_type, "asset": asset, "amount": amount}
     result = _signed_post(BINANCE_BASE_URL, "/sapi/v1/asset/transfer", api_key, api_secret, extra_params)
     return result if isinstance(result, dict) else {}
+
+
+# ---- Piyasa verisi (public, API key gerekmez) -----------------------------
+
+
+def _public_get(path: str, params: dict | None = None, timeout: float = 10) -> dict | list:
+    with httpx.Client(base_url=BINANCE_FUTURES_BASE_URL, timeout=timeout) as client:
+        response = client.get(path, params=params)
+    _raise_for_error(response)
+    return response.json()
+
+
+def get_futures_perpetual_symbols() -> list[str]:
+    """GET /fapi/v1/exchangeInfo — şu an işlem gören USDT-M perpetual futures sembolleri."""
+    data = _public_get("/fapi/v1/exchangeInfo")
+    return [
+        s["symbol"]
+        for s in data.get("symbols", [])
+        if s.get("quoteAsset") == "USDT" and s.get("contractType") == "PERPETUAL" and s.get("status") == "TRADING"
+    ]
+
+
+def get_futures_24h_tickers() -> list[dict]:
+    """GET /fapi/v1/ticker/24hr (sembolsüz) — tüm futures sembolleri için tek istekte 24s istatistik."""
+    result = _public_get("/fapi/v1/ticker/24hr")
+    return result if isinstance(result, list) else []
+
+
+def get_futures_kline_quote_volume(symbol: str, interval: str) -> float:
+    """Verilen sembol ve aralık için en son tamamlanmamış/son mumun quote (USDT) hacmini döner."""
+    result = _public_get("/fapi/v1/klines", {"symbol": symbol, "interval": interval, "limit": 1})
+    if not result:
+        return 0.0
+    return float(result[0][7])
+
+
+def get_futures_market_overview(period: str) -> list[dict]:
+    """USDT-M perpetual futures sembolleri için verilen dönemdeki toplam işlem hacmini (USDT) döner.
+
+    period: '1h', '4h' veya '24h'. 24h için Binance'ın tek istekte tüm sembolleri döndüren
+    ticker'ı kullanılır; 1h/4h için her sembol için ayrı bir kline isteği gerektiğinden
+    (yüzlerce sembol) istekler bir thread havuzunda paralel çalıştırılır.
+    """
+    symbols = set(get_futures_perpetual_symbols())
+
+    if period == "24h":
+        tickers = get_futures_24h_tickers()
+        return [
+            {"symbol": t["symbol"], "quote_volume": float(t["quoteVolume"])}
+            for t in tickers
+            if t.get("symbol") in symbols
+        ]
+
+    if period not in ("1h", "4h"):
+        raise ValueError(f"Desteklenmeyen dönem: {period}")
+
+    overview: list[dict] = []
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        future_to_symbol = {
+            executor.submit(get_futures_kline_quote_volume, symbol, period): symbol for symbol in symbols
+        }
+        for future in as_completed(future_to_symbol):
+            symbol = future_to_symbol[future]
+            try:
+                volume = future.result()
+            except BinanceAPIError:
+                continue
+            overview.append({"symbol": symbol, "quote_volume": volume})
+
+    return overview

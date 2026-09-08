@@ -52,6 +52,23 @@ class LoadBalancesWorker(QThread):
         self.success.emit(summary)
 
 
+class LoadMarketOverviewWorker(QThread):
+    success = Signal(list)
+    error = Signal(str)
+
+    def __init__(self, period: str) -> None:
+        super().__init__()
+        self._period = period
+
+    def run(self) -> None:
+        try:
+            overview = repository.get_market_overview(self._period)
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))
+            return
+        self.success.emit(overview)
+
+
 class CreateTransferWorker(QThread):
     success = Signal(object)
     error = Signal(str)

@@ -10,6 +10,7 @@ from app.binance_client import (
     get_api_restrictions,
     get_funding_wallet,
     get_futures_account,
+    get_futures_market_overview,
     get_spot_account,
 )
 from app.crypto import decrypt_secret, encrypt_secret
@@ -222,6 +223,16 @@ def create_transfer(
     db.commit()
     db.refresh(transfer)
     return transfer
+
+
+# ---- Piyasa verisi (public, kullanıcıdan/credential'dan bağımsız) --------
+
+
+def get_market_overview(period: str) -> list[dict]:
+    """USDT-M perpetual futures sembollerini verilen dönemdeki (1h/4h/24h) işlem
+    hacmine (USDT) göre büyükten küçüğe sıralı döner."""
+    overview = get_futures_market_overview(period)
+    return sorted(overview, key=lambda row: row["quote_volume"], reverse=True)
 
 
 def list_transfers(db: Session, user: User, limit: int = 50) -> list[Transfer]:
