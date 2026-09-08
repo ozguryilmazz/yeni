@@ -1,4 +1,5 @@
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -62,8 +63,8 @@ class MarketTab(QWidget):
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        self.table = QTableWidget(0, 2)
-        self.table.setHorizontalHeaderLabels(["Sembol", "Hacim (USDT)"])
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Sembol", "Hacim (USDT)", "Değişim %"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.setSortingEnabled(True)
         layout.addWidget(self.table)
@@ -89,6 +90,11 @@ class MarketTab(QWidget):
             self.table.setItem(i, 0, QTableWidgetItem(row["symbol"]))
             volume = row["quote_volume"]
             self.table.setItem(i, 1, NumericTableWidgetItem(volume, f"{volume:,.2f}"))
+
+            change = row.get("price_change_percent", 0.0)
+            change_item = NumericTableWidgetItem(change, f"{change:+.2f}%")
+            change_item.setForeground(QBrush(QColor("#2e7d32" if change >= 0 else "#c62828")))
+            self.table.setItem(i, 2, change_item)
         self.table.setSortingEnabled(True)
         self.table.sortItems(1, Qt.SortOrder.DescendingOrder)
 

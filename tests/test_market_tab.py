@@ -29,6 +29,20 @@ def test_market_tab_populates_table_sorted_by_volume_desc(qapp):
     assert [tab.table.item(i, 0).text() for i in range(3)] == ["BBBUSDT", "CCCUSDT", "AAAUSDT"]
 
 
+def test_market_tab_shows_price_change_percent_column(qapp):
+    overview = [
+        {"symbol": "AAAUSDT", "quote_volume": 100.0, "price_change_percent": 3.456},
+        {"symbol": "BBBUSDT", "quote_volume": 50.0, "price_change_percent": -1.2},
+    ]
+    with patch("app.repository.get_market_overview", return_value=overview):
+        tab = MarketTab()
+        tab._worker.wait()
+        qapp.processEvents()
+
+    assert tab.table.item(0, 2).text() == "+3.46%"
+    assert tab.table.item(1, 2).text() == "-1.20%"
+
+
 def test_market_tab_refresh_uses_selected_period(qapp):
     with patch("app.repository.get_market_overview", return_value=[]) as mock_overview:
         tab = MarketTab()

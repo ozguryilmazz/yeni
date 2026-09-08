@@ -110,27 +110,48 @@ def get_futures_24h_tickers() -> list[dict]:
     return result if isinstance(result, list) else []
 
 
-def get_futures_kline_quote_volume(symbol: str, interval: str) -> float:
-    """Verilen sembol ve aralık için en son tamamlanmamış/son mumun quote (USDT) hacmini döner."""
-    result = _public_get("/fapi/v1/klines", {"symbol": symbol, "interval": interval, "limit": 1})
+def get_futures_kline_stats(symbol: str, interval: str, client: httpx.Client | None = None) -> dict:
+    """Verilen sembol/aralık için son mumun quote (USDT) hacmini ve o mumun açılış/kapanışına
+    göre yüzde fiyat değişimini döner. `client` verilirse (toplu çağrılarda) o paylaşılan
+    bağlantı havuzu kullanılır; verilmezse tek seferlik bir istemci açılır."""
+    params = {"symbol": symbol, "interval": interval, "limit": 1}
+    if client is not None:
+        response = client.get("/fapi/v1/klines", params=params)
+        _raise_for_error(response)
+        result = response.json()
+    else:
+        result = _public_get("/fapi/v1/klines", params, timeout=5)
+
     if not result:
-        return 0.0
-    return float(result[0][7])
+        return {"quote_volume": 0.0, "price_change_percent": 0.0}
+
+    open_price = float(result[0][1])
+    close_price = float(result[0][4])
+    quote_volume = float(result[0][7])
+    price_change_percent = ((close_price - open_price) / open_price * 100) if open_price else 0.0
+    return {"quote_volume": quote_volume, "price_change_percent": price_change_percent}
 
 
 def get_futures_market_overview(period: str) -> list[dict]:
-    """USDT-M perpetual futures sembolleri için verilen dönemdeki toplam işlem hacmini (USDT) döner.
+    """USDT-M perpetual futures sembolleri için verilen dönemdeki toplam işlem hacmini (USDT)
+    ve yüzde fiyat değişimini döner.
 
     period: '1h', '4h' veya '24h'. 24h için Binance'ın tek istekte tüm sembolleri döndüren
     ticker'ı kullanılır; 1h/4h için her sembol için ayrı bir kline isteği gerektiğinden
-    (yüzlerce sembol) istekler bir thread havuzunda paralel çalıştırılır.
+    (yüzlerce sembol) istekler paylaşılan bir bağlantı havuzu üzerinden thread havuzunda
+    paralel çalıştırılır. Tek bir sembolün isteği başarısız/zaman aşımına uğrarsa o sembol
+    atlanır — tüm listeyi etkilemesi veya beklemeyi uzatması engellenir.
     """
     symbols = set(get_futures_perpetual_symbols())
 
     if period == "24h":
         tickers = get_futures_24h_tickers()
         return [
-            {"symbol": t["symbol"], "quote_volume": float(t["quoteVolume"])}
+            {
+                "symbol": t["symbol"],
+                "quote_volume": float(t["quoteVolume"]),
+                "price_change_percent": float(t["priceChangePercent"]),
+            }
             for t in tickers
             if t.get("symbol") in symbols
         ]
@@ -139,16 +160,17 @@ def get_futures_market_overview(period: str) -> list[dict]:
         raise ValueError(f"Desteklenmeyen dönem: {period}")
 
     overview: list[dict] = []
-    with ThreadPoolExecutor(max_workers=15) as executor:
-        future_to_symbol = {
-            executor.submit(get_futures_kline_quote_volume, symbol, period): symbol for symbol in symbols
-        }
-        for future in as_completed(future_to_symbol):
-            symbol = future_to_symbol[future]
-            try:
-                volume = future.result()
-            except BinanceAPIError:
-                continue
-            overview.append({"symbol": symbol, "quote_volume": volume})
+    with httpx.Client(base_url=BINANCE_FUTURES_BASE_URL, timeout=5) as client:
+        with ThreadPoolExecutor(max_workers=20) as executor:
+            future_to_symbol = {
+                executor.submit(get_futures_kline_stats, symbol, period, client): symbol for symbol in symbols
+            }
+            for future in as_completed(future_to_symbol):
+                symbol = future_to_symbol[future]
+                try:
+                    stats = future.result()
+                except Exception:  # noqa: BLE001 - ağ hatası/zaman aşımı olan tek bir sembol atlanır
+                    continue
+                overview.append({"symbol": symbol, **stats})
 
     return overview

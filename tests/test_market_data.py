@@ -4,7 +4,7 @@ import pytest
 
 from app.binance_client import (
     get_futures_24h_tickers,
-    get_futures_kline_quote_volume,
+    get_futures_kline_stats,
     get_futures_market_overview,
     get_futures_perpetual_symbols,
 )
@@ -38,17 +38,40 @@ def test_get_futures_24h_tickers_returns_raw_list():
     assert tickers == [{"symbol": "BTCUSDT", "quoteVolume": "123.0"}]
 
 
-def test_get_futures_kline_quote_volume_parses_quote_asset_volume_field():
-    kline = [[1690000000000, "1", "2", "0.5", "1.5", "100", 1690003600000, "12345.67", 10, "50", "6000", "0"]]
+def test_get_futures_kline_stats_parses_volume_and_price_change():
+    # [openTime, open, high, low, close, volume, closeTime, quoteVolume, ...]
+    kline = [[1690000000000, "100", "110", "90", "110", "100", 1690003600000, "12345.67", 10, "50", "6000", "0"]]
     with patch("app.binance_client._public_get", return_value=kline):
-        volume = get_futures_kline_quote_volume("BTCUSDT", "1h")
+        stats = get_futures_kline_stats("BTCUSDT", "1h")
 
-    assert volume == 12345.67
+    assert stats["quote_volume"] == 12345.67
+    assert stats["price_change_percent"] == pytest.approx(10.0)  # 100 -> 110 = %10
 
 
-def test_get_futures_kline_quote_volume_empty_result_is_zero():
+def test_get_futures_kline_stats_uses_shared_client_when_given():
+    kline = [[0, "100", "100", "100", "105", "1", 0, "999.0", 1, "0", "0", "0"]]
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return kline
+
+    class FakeClient:
+        def get(self, path, params=None):
+            assert path == "/fapi/v1/klines"
+            return FakeResponse()
+
+    stats = get_futures_kline_stats("BTCUSDT", "1h", client=FakeClient())
+    assert stats["quote_volume"] == 999.0
+    assert stats["price_change_percent"] == pytest.approx(5.0)
+
+
+def test_get_futures_kline_stats_empty_result_is_zero():
     with patch("app.binance_client._public_get", return_value=[]):
-        assert get_futures_kline_quote_volume("BTCUSDT", "1h") == 0.0
+        stats = get_futures_kline_stats("BTCUSDT", "1h")
+
+    assert stats == {"quote_volume": 0.0, "price_change_percent": 0.0}
 
 
 def test_market_overview_24h_filters_to_perpetual_symbols_only():
@@ -57,25 +80,48 @@ def test_market_overview_24h_filters_to_perpetual_symbols_only():
         patch(
             "app.binance_client.get_futures_24h_tickers",
             return_value=[
-                {"symbol": "BTCUSDT", "quoteVolume": "500.5"},
-                {"symbol": "SOMEQUARTERLY", "quoteVolume": "999"},
+                {"symbol": "BTCUSDT", "quoteVolume": "500.5", "priceChangePercent": "1.23"},
+                {"symbol": "SOMEQUARTERLY", "quoteVolume": "999", "priceChangePercent": "9.99"},
             ],
         ),
     ):
         overview = get_futures_market_overview("24h")
 
-    assert overview == [{"symbol": "BTCUSDT", "quote_volume": 500.5}]
+    assert overview == [{"symbol": "BTCUSDT", "quote_volume": 500.5, "price_change_percent": 1.23}]
 
 
 def test_market_overview_1h_uses_per_symbol_klines():
-    volumes = {"BTCUSDT": 10.0, "ETHUSDT": 20.0}
+    stats = {
+        "BTCUSDT": {"quote_volume": 10.0, "price_change_percent": 1.0},
+        "ETHUSDT": {"quote_volume": 20.0, "price_change_percent": -2.0},
+    }
     with (
-        patch("app.binance_client.get_futures_perpetual_symbols", return_value=list(volumes)),
-        patch("app.binance_client.get_futures_kline_quote_volume", side_effect=lambda symbol, interval: volumes[symbol]),
+        patch("app.binance_client.get_futures_perpetual_symbols", return_value=list(stats)),
+        patch(
+            "app.binance_client.get_futures_kline_stats",
+            side_effect=lambda symbol, interval, client=None: stats[symbol],
+        ),
     ):
         overview = get_futures_market_overview("1h")
 
-    assert {row["symbol"]: row["quote_volume"] for row in overview} == volumes
+    assert {row["symbol"]: row["quote_volume"] for row in overview} == {
+        symbol: s["quote_volume"] for symbol, s in stats.items()
+    }
+
+
+def test_market_overview_1h_skips_symbol_on_any_error():
+    def fake_stats(symbol, interval, client=None):
+        if symbol == "BROKENUSDT":
+            raise RuntimeError("network kaboom")
+        return {"quote_volume": 1.0, "price_change_percent": 0.0}
+
+    with (
+        patch("app.binance_client.get_futures_perpetual_symbols", return_value=["BTCUSDT", "BROKENUSDT"]),
+        patch("app.binance_client.get_futures_kline_stats", side_effect=fake_stats),
+    ):
+        overview = get_futures_market_overview("1h")
+
+    assert [row["symbol"] for row in overview] == ["BTCUSDT"]
 
 
 def test_market_overview_invalid_period_raises():
@@ -88,9 +134,9 @@ def test_repository_get_market_overview_sorts_descending_by_volume():
     with patch(
         "app.repository.get_futures_market_overview",
         return_value=[
-            {"symbol": "A", "quote_volume": 5.0},
-            {"symbol": "B", "quote_volume": 50.0},
-            {"symbol": "C", "quote_volume": 25.0},
+            {"symbol": "A", "quote_volume": 5.0, "price_change_percent": 0.0},
+            {"symbol": "B", "quote_volume": 50.0, "price_change_percent": 0.0},
+            {"symbol": "C", "quote_volume": 25.0, "price_change_percent": 0.0},
         ],
     ):
         result = get_market_overview("24h")

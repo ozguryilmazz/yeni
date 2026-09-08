@@ -13,8 +13,10 @@ uygulaması**. Genel yol haritası için bkz. [PLAN.md](./PLAN.md).
 - İki sekmeli ana pencere: **Piyasa** (herkese açık futures verisi) ve **Transferler**
   (hesap bağlama, bakiyeler, cüzdanlar arası transfer)
 - **Piyasa** sekmesi: USDT-M perpetual futures'ta işlem gören tüm coinleri seçilen dönemdeki
-  (son 1 saat / 4 saat / 24 saat) işlem hacmine göre listeler; sütun başlıklarına tıklayarak
-  sıralama değiştirilebilir. Binance hesabı bağlamaya gerek yok (public veri)
+  (son 1 saat / 4 saat / 24 saat) işlem hacmine ve fiyat değişim yüzdesine göre listeler;
+  sütun başlıklarına tıklayarak sıralama değiştirilebilir. Binance hesabı bağlamaya gerek yok
+  (public veri); tek bir sembolün isteği başarısız olursa (ağ hatası/zaman aşımı) o sembol
+  atlanır, tüm liste beklemez
 - Aynı bilgisayarda birden fazla profil/hesap için basit bir giriş sistemi (local, şifreler bcrypt ile hash'lenir)
 - Binance API key/secret'ı local SQLite'ta Fernet ile şifreli saklama; ana şifreleme
   anahtarı işletim sisteminin güvenli kimlik bilgisi deposunda tutulur (Windows Credential
@@ -87,7 +89,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-34 test: auth (kayıt/giriş), credential bağlama (withdrawal reddi, şifreleme, silme),
+37 test: auth (kayıt/giriş), credential bağlama (withdrawal reddi, şifreleme, silme),
 bakiye normalize etme, transfer (yön eşlemesi, başarı/başarısızlık loglama, geçmiş),
 piyasa verisi (sembol filtreleme, hacim hesaplama, sıralama) ve sekme yapısı.
 
