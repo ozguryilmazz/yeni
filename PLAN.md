@@ -1,72 +1,76 @@
-# Binance Spot ⇄ Futures Transfer Uygulaması — İş Akış Planı
+# Binance Cüzdan Yöneticisi — İş Akış Planı
 
 ## 1. Amaç
 
-Kullanıcıların kendi Binance hesaplarını API key ile bağlayıp:
+Binance hesabını API key ile bağlayıp:
 
 - **Faz 1 (bu etap):** Spot, Futures (USDⓈ-M) ve Funding cüzdan bakiyelerini tek ekranda görüntülemek, cüzdanlar arası coin transferi yapmak.
 - **Faz 2 (ilerleyen etap):** Spot/Futures üzerinde emir (işlem) verme.
+
+**Not:** İlk sürüm web uygulaması olarak planlanmış ve öyle uygulanmıştı; kullanıcı tercihiyle
+**Python masaüstü GUI (PySide6)** uygulamasına dönüştürüldü. Tarayıcı veya sunucuya gerek yok —
+tek bir Python programı, veriler local SQLite'ta.
 
 ## 2. Teknoloji Yığını
 
 | Katman | Seçim |
 |---|---|
-| Backend | Python 3.11+, FastAPI |
-| Frontend | React + TypeScript (Vite) |
-| Veritabanı | PostgreSQL |
-| ORM / Migration | SQLAlchemy + Alembic |
-| Auth | JWT (access + refresh token), bcrypt ile parola hash |
-| Şifreleme | API secret'lar AES-256 (Fernet) ile DB'de şifreli; master key ortam değişkeninden |
-| Binance entegrasyonu | REST API, HMAC-SHA256 imzalama (python-binance veya doğrudan `httpx`) |
-| Deployment | Docker Compose (backend, frontend, postgres) |
+| Uygulama | Python 3.11+, tek masaüstü program (sunucu yok) |
+| UI | PySide6 (Qt for Python, LGPL — PyQt6'nın aksine dağıtımda lisans sorunu çıkarmaz) |
+| Veritabanı | Local SQLite (kullanıcının kendi bilgisayarında, `app.db`) |
+| ORM | SQLAlchemy 2.0 |
+| Kullanıcı/profil | Local login sistemi (bcrypt ile parola hash), aynı bilgisayarda birden fazla profil |
+| Şifreleme | API secret'lar AES-256 (Fernet) ile local DB'de şifreli; ana anahtar OS keyring'de (Windows Credential Manager / macOS Keychain / Linux Secret Service), yoksa izinleri kısıtlı local dosyada |
+| Binance entegrasyonu | REST API, HMAC-SHA256 imzalama, senkron `httpx.Client` (QThread worker'larda çalışır, UI'yı kilitlemez) |
+| Test | pytest (Binance çağrıları mock'lanarak) |
 
 ## 3. Mimari Akış
 
 ```
-React SPA → FastAPI Backend → PostgreSQL (kullanıcı + şifreli API key + transfer logları)
-                            → Binance REST API (mainnet, kullanıcı adına imzalı istek)
+PySide6 UI (login_window / main_window)
+   → QThread worker'lar (ConnectCredentialWorker, LoadBalancesWorker, CreateTransferWorker)
+      → repository.py (iş mantığı: auth, credential, wallet, transfer)
+         → binance_client.py (imzalı REST istekleri) → Binance REST API (mainnet)
+         → SQLAlchemy session → local SQLite (app.db)
 ```
 
-Frontend hiçbir zaman API secret görmez; tüm imzalama backend'de yapılır.
+Ağ çağrısı gerektiren işlemler (credential doğrulama, bakiye çekme, transfer) arayüzü
+kilitlememesi için QThread'lerde çalışır; sonuçlar Qt sinyalleriyle ana thread'e döner.
 
 ## 4. Fazlar
 
-### Faz 0 — Proje Altyapısı
-- Repo yapısı: `backend/`, `frontend/`, `docker-compose.yml`
-- FastAPI iskeleti + `/health` endpoint
-- React (Vite+TS) iskeleti
-- PostgreSQL + Alembic migration altyapısı
-- `.env` / secrets yönetimi
+### Faz 0 — Proje Altyapısı ✅
+- `app/` paketi: config (local veri dizini), database (SQLite engine/session), models
+- `requirements.txt` / `requirements-dev.txt`
 
-### Faz 1 — Kullanıcı Yönetimi & Auth
+### Faz 1 — Kullanıcı/Profil Yönetimi ✅
 - `users` tablosu (email, password_hash, created_at)
-- Kayıt / Login / refresh-token endpoint'leri
-- Frontend: Login / Register sayfaları, korumalı route'lar
+- Local login/register ekranı (PySide6), bcrypt ile parola doğrulama
+- Oturum durumu bellekte tutulur (JWT/token gerekmez — ağ isteği yok)
 
-### Faz 2 — Binance Hesabı Bağlama
+### Faz 2 — Binance Hesabı Bağlama ✅
 - `api_credentials` tablosu (user_id, label, encrypted_api_key, encrypted_api_secret, created_at)
-- Şifreleme servisi (Fernet/AES-256-GCM)
-- "Binance Hesabı Bağla" formu (API key + secret)
-- Bağlantı testi: `/api/v3/account` (spot) ve `/fapi/v2/account` (futures) ile read-only doğrulama
-- **Zorunlu kontrol:** girilen key'de withdrawal (para çekme) yetkisi olmamalı; UI'da uyarı gösterilir
+- Fernet şifreleme servisi (`crypto.py`), ana anahtar OS keyring'den
+- "Binance Hesabı Bağla" dialog'u (API key + secret)
+- Bağlantı testi: `/sapi/v1/account/apiRestrictions` ile gerçek izin doğrulaması
+- **Zorunlu kontrol:** withdrawal (para çekme) yetkisi olan key'ler reddedilir
 
-### Faz 3 — Bakiye Görüntüleme
-- `GET /api/wallet/spot`, `GET /api/wallet/futures`, `GET /api/wallet/funding`
-- Dashboard: Spot / Futures / Funding kartları, coin bazlı tablo, toplam USD karşılığı
-- Manuel yenile + kısa süreli backend cache (Binance rate-limit/weight yönetimi)
+### Faz 3 — Bakiye Görüntüleme ✅
+- `repository.get_wallet_summary`: Spot (`/api/v3/account`), Futures (`/fapi/v2/account`),
+  Funding (`/sapi/v1/asset/get-funding-asset`) bakiyelerini normalize eder (sıfır bakiyeler filtrelenir)
+- Ana pencerede Spot / Futures / Funding tabloları + Yenile butonu
 
-### Faz 4 — Spot ⇄ Futures ⇄ Funding Transfer
-- `POST /api/transfer` (from_wallet, to_wallet, asset, amount)
-- Binance `/sapi/v1/asset/transfer` entegrasyonu (MAIN_UMFUTURE, UMFUTURE_MAIN, MAIN_FUNDING, FUNDING_MAIN, ...)
-- Ön validasyon: yeterli bakiye, min/max limit
-- `transfers` tablosunda işlem geçmişi (asset, miktar, yön, Binance tranId, durum, tarih)
-- Frontend: transfer formu + geçmiş tablosu
-- Binance hata kodlarının kullanıcı dostu mesaja çevrilmesi
+### Faz 4 — Spot ⇄ Futures ⇄ Funding Transfer ✅
+- `repository.create_transfer`: Binance universal transfer API (`/sapi/v1/asset/transfer`)
+  entegrasyonu (6 yönlü tip eşlemesi: `transfer_types.py`)
+- Ön validasyon: aynı cüzdan reddi, desteklenmeyen yön reddi
+- `transfers` tablosunda işlem geçmişi (asset, miktar, yön, Binance tranId, durum, hata mesajı, tarih)
+- Ana pencerede transfer formu + geçmiş tablosu
 
-### Faz 5 — Güvenlik & Kalite
-- Login brute-force koruması / rate limiting
-- Audit log (kim, ne zaman, ne transfer etti)
-- pytest (Binance client mock'lanarak) + Playwright E2E (login → bağla → bakiye → transfer)
+### Faz 5 — Kalite ✅
+- pytest paketi: auth, credential (withdrawal reddi/şifreleme/silme), wallet (normalize etme,
+  hata durumları), transfer (yön eşlemesi, başarı/başarısızlık loglama, geçmiş sıralaması)
+- PySide6 UI'ın headless (offscreen) modda uçtan uca (kayıt→bağlama→bakiye→transfer) çalıştığı doğrulandı
 
 ### Faz 6 — İleride: İşlem (Trading)
 - Spot / Futures market-limit emir verme, kaldıraç ayarlama
@@ -78,18 +82,18 @@ Frontend hiçbir zaman API secret görmez; tüm imzalama backend'de yapılır.
 ```
 users(id, email, password_hash, created_at)
 api_credentials(id, user_id, label, encrypted_api_key, encrypted_api_secret,
-                 permissions_verified_at, created_at)
-transfers(id, user_id, asset, amount, from_wallet, to_wallet,
-          binance_tran_id, status, created_at)
+                 can_withdraw, permissions_verified_at, created_at)
+transfers(id, user_id, credential_id, asset, amount, from_wallet, to_wallet,
+          binance_tran_id, status, error_message, created_at)
 ```
 
 ## 6. Güvenlik Notları
 
-- API secret hiçbir zaman log/hata mesajı/response içinde plaintext dönmez.
+- API secret hiçbir zaman log/hata mesajı içinde plaintext görünmez; DB'de Fernet ile şifrelenir.
 - Kullanıcıya Binance tarafında IP whitelist kullanması önerilir.
-- Withdrawal izni olan key'lerin bağlanması engellenir/uyarılır.
-- Mainnet ile başlandığı için transfer öncesi tutar/coin/adres doğrulaması sıkı tutulur.
+- Withdrawal izni olan key'lerin bağlanması engellenir.
+- Mainnet ile çalışıldığı için transfer öncesi tutar/coin/yön doğrulaması sıkı tutulur.
 
 ## 7. Sıradaki Adım
 
-Faz 0 + Faz 1 (proje iskeleti + kullanıcı auth) ile implementasyona başlanabilir.
+Faz 0-5 tamamlandı. Sıradaki adım Faz 6 — trading özellikleri (kullanıcı onayı ile başlanacak).
