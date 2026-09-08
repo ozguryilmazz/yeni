@@ -104,17 +104,18 @@ def get_futures_perpetual_symbols() -> list[str]:
     ]
 
 
-def get_futures_24h_tickers() -> list[dict]:
-    """GET /fapi/v1/ticker/24hr (sembolsüz) — tüm futures sembolleri için tek istekte 24s istatistik."""
-    result = _public_get("/fapi/v1/ticker/24hr")
-    return result if isinstance(result, list) else []
+PERIOD_KLINE_INTERVAL = {"1h": "1h", "4h": "4h", "24h": "1d"}
+"""Piyasa sekmesindeki dönem seçimini Binance kline interval'ine eşler. 24h için takvim
+günü mumu ('1d') kullanılır; bu da hem anlık fiyatı hem de bir önceki güne göre hacim
+değişimini tek bir kline isteğinden hesaplamayı mümkün kılar."""
 
 
 def get_futures_kline_stats(symbol: str, interval: str, client: httpx.Client | None = None) -> dict:
-    """Verilen sembol/aralık için son mumun quote (USDT) hacmini ve o mumun açılış/kapanışına
-    göre yüzde fiyat değişimini döner. `client` verilirse (toplu çağrılarda) o paylaşılan
-    bağlantı havuzu kullanılır; verilmezse tek seferlik bir istemci açılır."""
-    params = {"symbol": symbol, "interval": interval, "limit": 1}
+    """Verilen sembol/aralık için son iki mumu çeker: anlık fiyatı (son mumun kapanışı),
+    o mumun açılış/kapanışına göre yüzde fiyat değişimini, quote (USDT) hacmini ve bir
+    önceki muma göre yüzde hacim değişimini döner. `client` verilirse (toplu çağrılarda)
+    o paylaşılan bağlantı havuzu kullanılır; verilmezse tek seferlik bir istemci açılır."""
+    params = {"symbol": symbol, "interval": interval, "limit": 2}
     if client is not None:
         response = client.get("/fapi/v1/klines", params=params)
         _raise_for_error(response)
@@ -123,47 +124,49 @@ def get_futures_kline_stats(symbol: str, interval: str, client: httpx.Client | N
         result = _public_get("/fapi/v1/klines", params, timeout=5)
 
     if not result:
-        return {"quote_volume": 0.0, "price_change_percent": 0.0}
+        return {"last_price": 0.0, "quote_volume": 0.0, "price_change_percent": 0.0, "volume_change_percent": 0.0}
 
-    open_price = float(result[0][1])
-    close_price = float(result[0][4])
-    quote_volume = float(result[0][7])
+    current = result[-1]
+    open_price = float(current[1])
+    close_price = float(current[4])
+    quote_volume = float(current[7])
     price_change_percent = ((close_price - open_price) / open_price * 100) if open_price else 0.0
-    return {"quote_volume": quote_volume, "price_change_percent": price_change_percent}
+
+    volume_change_percent = 0.0
+    if len(result) >= 2:
+        previous_volume = float(result[-2][7])
+        if previous_volume:
+            volume_change_percent = (quote_volume - previous_volume) / previous_volume * 100
+
+    return {
+        "last_price": close_price,
+        "quote_volume": quote_volume,
+        "price_change_percent": price_change_percent,
+        "volume_change_percent": volume_change_percent,
+    }
 
 
 def get_futures_market_overview(period: str) -> list[dict]:
-    """USDT-M perpetual futures sembolleri için verilen dönemdeki toplam işlem hacmini (USDT)
-    ve yüzde fiyat değişimini döner.
+    """USDT-M perpetual futures sembolleri için verilen dönemdeki anlık fiyatı, toplam işlem
+    hacmini (USDT), yüzde fiyat değişimini ve bir önceki eşit uzunluktaki döneme göre yüzde
+    hacim değişimini döner.
 
-    period: '1h', '4h' veya '24h'. 24h için Binance'ın tek istekte tüm sembolleri döndüren
-    ticker'ı kullanılır; 1h/4h için her sembol için ayrı bir kline isteği gerektiğinden
+    period: '1h', '4h' veya '24h'. Her sembol için ayrı bir kline isteği gerektiğinden
     (yüzlerce sembol) istekler paylaşılan bir bağlantı havuzu üzerinden thread havuzunda
     paralel çalıştırılır. Tek bir sembolün isteği başarısız/zaman aşımına uğrarsa o sembol
     atlanır — tüm listeyi etkilemesi veya beklemeyi uzatması engellenir.
     """
-    symbols = set(get_futures_perpetual_symbols())
-
-    if period == "24h":
-        tickers = get_futures_24h_tickers()
-        return [
-            {
-                "symbol": t["symbol"],
-                "quote_volume": float(t["quoteVolume"]),
-                "price_change_percent": float(t["priceChangePercent"]),
-            }
-            for t in tickers
-            if t.get("symbol") in symbols
-        ]
-
-    if period not in ("1h", "4h"):
+    if period not in PERIOD_KLINE_INTERVAL:
         raise ValueError(f"Desteklenmeyen dönem: {period}")
+
+    interval = PERIOD_KLINE_INTERVAL[period]
+    symbols = set(get_futures_perpetual_symbols())
 
     overview: list[dict] = []
     with httpx.Client(base_url=BINANCE_FUTURES_BASE_URL, timeout=5) as client:
         with ThreadPoolExecutor(max_workers=20) as executor:
             future_to_symbol = {
-                executor.submit(get_futures_kline_stats, symbol, period, client): symbol for symbol in symbols
+                executor.submit(get_futures_kline_stats, symbol, interval, client): symbol for symbol in symbols
             }
             for future in as_completed(future_to_symbol):
                 symbol = future_to_symbol[future]

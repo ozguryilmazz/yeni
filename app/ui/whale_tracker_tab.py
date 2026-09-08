@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
@@ -42,7 +43,16 @@ class WhaleTrapTab(QWidget):
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Sembol"))
         self.symbol_input = QLineEdit("BTCUSDT")
+        self.symbol_input.setPlaceholderText("BTCUSDT")
         controls.addWidget(self.symbol_input)
+
+        self.paste_button = QPushButton("Yapıştır")
+        self.paste_button.setToolTip(
+            "Piyasa sekmesinde bir coine sağ tıklayıp 'Sembolü Kopyala' dedikten sonra "
+            "buraya yapıştırır (Ctrl+V ile de yapıştırılabilir)."
+        )
+        self.paste_button.clicked.connect(self._handle_paste)
+        controls.addWidget(self.paste_button)
 
         self.start_button = QPushButton("İzlemeyi Başlat")
         self.start_button.clicked.connect(self._handle_start)
@@ -90,6 +100,11 @@ class WhaleTrapTab(QWidget):
         self.event_table.setHorizontalHeaderLabels(["Zaman", "Modül", "Mesaj"])
         self.event_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.event_table)
+
+    def _handle_paste(self) -> None:
+        text = QGuiApplication.clipboard().text().strip().upper()
+        if text:
+            self.symbol_input.setText(text)
 
     def _handle_start(self) -> None:
         symbol = self.symbol_input.text().strip().upper()
