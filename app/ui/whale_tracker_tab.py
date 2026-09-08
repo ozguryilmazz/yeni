@@ -82,6 +82,14 @@ class WhaleTrapTab(QWidget):
         self.direction_label = QLabel("")
         self.direction_label.setStyleSheet("font-size: 16px;")
         score_row.addWidget(self.direction_label)
+        self.regime_label = QLabel("")
+        self.regime_label.setStyleSheet("font-size: 12px; color: #888888;")
+        self.regime_label.setToolTip(
+            "Likidasyon modülü tetiklendiğinde skor motoru otomatik olarak 'kriz "
+            "ağırlıklarına' geçer: emir defteri gürültülü hale geldiği için ağırlığı "
+            "düşürülür, OI ve likidasyonun ağırlığı artırılır."
+        )
+        score_row.addWidget(self.regime_label)
         score_row.addStretch()
         layout.addLayout(score_row)
 
@@ -134,6 +142,7 @@ class WhaleTrapTab(QWidget):
         self.score_label.setText("—")
         self.score_label.setStyleSheet("font-size: 22px; font-weight: bold;")
         self.direction_label.setText("")
+        self.regime_label.setText("")
         self.score_bar.setValue(0)
 
     def stop_tracking(self) -> None:
@@ -150,6 +159,7 @@ class WhaleTrapTab(QWidget):
         color = {"LONG": "#2e7d32", "SHORT": "#c62828"}.get(result.direction, "#888888")
         self.score_label.setStyleSheet(f"font-size: 22px; font-weight: bold; color: {color};")
         self.direction_label.setStyleSheet(f"font-size: 16px; color: {color};")
+        self.regime_label.setText("⚠️ Kriz Modu (ağırlıklar kaydırıldı)" if result.regime == "crisis" else "")
 
         self.breakdown_table.setRowCount(len(result.signals))
         for i, (name, signal) in enumerate(result.signals.items()):

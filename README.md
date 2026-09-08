@@ -23,18 +23,30 @@ uygulaması**. Genel yol haritası için bkz. [PLAN.md](./PLAN.md).
 - **Tuzak Skoru** sekmesi: tek bir sembol için (ör. BTCUSDT) teknik indikatör (RSI/MACD/MA)
   kullanmadan, tamamen piyasa yapıcı davranışına dayalı canlı bir "Whale Trap & Liquidity
   Tracker" izleyicisi:
-  - **Open Interest & Hacim Diverjansı** — fiyat yatayken (1s değişim < %0.5) OI'nin
-    >%5 artması "sıkışma/birikim" olarak işaretlenir (`GET /fapi/v1/openInterest`)
+  - **Open Interest & Hacim Diverjansı** — fiyat yatayken (canlı mark price'a göre 1s
+    değişim < %0.5) OI'nin >%5 artması "sıkışma/birikim" olarak işaretlenir. OI ayrı,
+    hızlı (5sn) bir REST döngüsüyle tazelenir (Binance'ta OI için resmi bir WebSocket
+    push akışı yoktur — `GET /fapi/v1/openInterest`)
   - **Funding Rate Anomalisi** — funding rate < -%0.03 ise LONG squeeze ihtimali,
-    > +%0.05 ise SHORT squeeze ihtimali (`GET /fapi/v1/premiumIndex`)
-  - **Anlık Likidasyon Dinleyici** — son 60 saniyede 1.000.000 USDT üzeri likidasyon
-    olursa, likide olan yönün TERSİNE bir tetik sinyali üretir
-    (`wss://fstream.binance.com/ws/!forceOrder@arr`)
+    > +%0.05 ise SHORT squeeze ihtimali. `<symbol>@markPrice@1s` WebSocket akışından
+    ~1 saniyede bir güncellenir (15sn'lik REST poll'u beklemez — squeeze anındaki
+    REST/WS gecikme farkını azaltır)
+  - **Anlık Likidasyon Dinleyici** — son 60 saniyede likidasyon hacmi eşiği aşarsa,
+    likide olan yönün TERSİNE bir tetik sinyali üretir
+    (`wss://fstream.binance.com/ws/!forceOrder@arr`). Eşik sabit değildir: sembolün
+    24s hacminin %0.5'i (min. 1.000.000 USDT taban) olarak dinamik hesaplanır — BTC
+    için sıradan olan bir tutar, hacmi düşük bir altcoin için devasa olabilir. Ayrıca
+    şelale (cascading liquidation) hâlâ hızlanıyorsa sinyal ERTELENİR — "bıçağı tutma"
+    riskine karşı önce hızın kesilmesi beklenir
   - **Emir Defteri Dengesizliği** — bid/ask hacim oranı > 2.5 yukarı baskı, < 0.4 aşağı
-    baskı sinyali üretir (`wss://fstream.binance.com/ws/<symbol>@depth20@100ms`)
+    baskı sinyali üretir (`wss://fstream.binance.com/ws/<symbol>@depth20@100ms`).
+    Spoofing (sahte duvar) filtresi: oran, ardışık 3 güncellemenin TAMAMINDA eşiği
+    aşarsa tetiklenir — anlık bir sahte duvar bu ~300ms içinde genelde geri çekilir
   - Tüm modüller + hacim patlaması verisi bir **Tuzak Skoru** (Trap Scorer) ile 0-100
-    arası tek bir skora ve yöne (LONG/SHORT) indirgenir; sadece bilgi amaçlıdır,
-    otomatik işlem açmaz
+    arası tek bir skora ve yöne (LONG/SHORT) indirgenir. Likidasyon modülü tetiklendiğinde
+    skor motoru otomatik olarak "kriz ağırlıklarına" geçer (emir defteri ağırlığı düşer,
+    OI/likidasyon ağırlığı artar — bir likidasyon patlaması sırasında emir defteri
+    güvenilirliğini kaybeder). Sadece bilgi amaçlıdır, otomatik işlem açmaz
 - Aynı bilgisayarda birden fazla profil/hesap için basit bir giriş sistemi (local, şifreler bcrypt ile hash'lenir)
 - Binance API key/secret'ı local SQLite'ta Fernet ile şifreli saklama; ana şifreleme
   anahtarı işletim sisteminin güvenli kimlik bilgisi deposunda tutulur (Windows Credential
@@ -123,12 +135,13 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-68 test: auth (kayıt/giriş), credential bağlama (withdrawal reddi, şifreleme, silme),
+80 test: auth (kayıt/giriş), credential bağlama (withdrawal reddi, şifreleme, silme),
 bakiye normalize etme, transfer (yön eşlemesi, başarı/başarısızlık loglama, geçmiş),
 piyasa verisi (sembol filtreleme, anlık fiyat/hacim/hacim değişimi hesaplama, sıralama,
 panoya kopyalama), sekme yapısı ve Tuzak Skoru modülleri (OI/funding/likidasyon/orderbook
-mantığı, WebSocket mesaj ayrıştırma, engine orkestrasyonu — hepsi mock'lu, gerçek
-ağ/WebSocket bağlantısı gerektirmez).
+mantığı, dinamik likidasyon eşiği, şelale hızlanma tespiti, spoof filtresi, dinamik
+ağırlıklandırma, WebSocket mesaj ayrıştırma, engine orkestrasyonu — hepsi mock'lu,
+gerçek ağ/WebSocket bağlantısı gerektirmez).
 
 ## Güvenlik
 

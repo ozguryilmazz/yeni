@@ -21,3 +21,4 @@ class TrapScoreResult:
     score: float  # 0-100, nihai Tuzak Skoru
     direction: str | None  # "LONG" | "SHORT" | None (hiçbir modül tetiklenmediyse)
     signals: dict[str, ModuleSignal] = field(default_factory=dict)
+    regime: str = "normal"  # "normal" | "crisis" — TrapScorer'ın hangi ağırlık setini kullandığı

@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections import deque
 from collections.abc import Callable
 
 from app.whale_tracker.models import ModuleSignal
@@ -11,22 +12,53 @@ class OrderbookImbalanceModule:
     Toplam bid (alış) hacminin toplam ask (satış) hacmine oranını değerlendirir.
     Oran > up_pressure_ratio ise alış tarafı baskın (yukarı baskı); oran <
     down_pressure_ratio ise satış tarafı baskın (aşağı baskı).
+
+    Spoofing (sahte duvar) filtresi: balinalar genellikle fiyatı hareket ettirmeden
+    hemen önce gerçekleşmeyecek devasa emirler koyup anında geri çekerler. Tek bir anlık
+    depth güncellemesinde oran eşiği geçmesi bu yüzden tek başına güvenilir değildir.
+    Bunun yerine oran, ardışık `confirmation_updates` güncellemenin TAMAMINDA eşiği
+    aşarsa tetiklenir (varsayılan 3 güncelleme × 100ms akış hızı ≈ 300ms kalıcılık) —
+    tek seferlik bir sahte duvar bu süre içinde genelde zaten geri çekilmiş olur.
     """
 
-    def __init__(self, up_pressure_ratio: float = 2.5, down_pressure_ratio: float = 0.4) -> None:
+    def __init__(
+        self, up_pressure_ratio: float = 2.5, down_pressure_ratio: float = 0.4, confirmation_updates: int = 3
+    ) -> None:
         self.up_pressure_ratio = up_pressure_ratio
         self.down_pressure_ratio = down_pressure_ratio
+        self.confirmation_updates = max(1, confirmation_updates)
+        self._recent_ratios: deque[float] = deque(maxlen=self.confirmation_updates)
 
     def evaluate(self, bid_volume: float, ask_volume: float) -> ModuleSignal:
         if ask_volume <= 0 or bid_volume <= 0:
+            self._recent_ratios.clear()
             return ModuleSignal(False, 0, "Emir defteri verisi yetersiz")
 
         ratio = bid_volume / ask_volume
-        if ratio > self.up_pressure_ratio:
-            return ModuleSignal(True, 100, f"Bid/Ask oranı {ratio:.2f} — yukarı baskı", direction="LONG")
-        if ratio < self.down_pressure_ratio:
-            return ModuleSignal(True, 100, f"Bid/Ask oranı {ratio:.2f} — aşağı baskı", direction="SHORT")
-        return ModuleSignal(False, 0, f"Bid/Ask oranı {ratio:.2f} nötr")
+        self._recent_ratios.append(ratio)
+
+        if len(self._recent_ratios) < self.confirmation_updates:
+            return ModuleSignal(
+                False, 0, f"Bid/Ask oranı {ratio:.2f} (doğrulanıyor: {len(self._recent_ratios)}/{self.confirmation_updates})"
+            )
+
+        if all(r > self.up_pressure_ratio for r in self._recent_ratios):
+            return ModuleSignal(
+                True,
+                100,
+                f"Bid/Ask oranı {self.confirmation_updates} güncellemedir >{self.up_pressure_ratio} "
+                "— kalıcı yukarı baskı (anlık spoof filtrelendi)",
+                direction="LONG",
+            )
+        if all(r < self.down_pressure_ratio for r in self._recent_ratios):
+            return ModuleSignal(
+                True,
+                100,
+                f"Bid/Ask oranı {self.confirmation_updates} güncellemedir <{self.down_pressure_ratio} "
+                "— kalıcı aşağı baskı (anlık spoof filtrelendi)",
+                direction="SHORT",
+            )
+        return ModuleSignal(False, 0, f"Bid/Ask oranı {ratio:.2f} nötr/tutarsız")
 
 
 class OrderbookStreamListener:

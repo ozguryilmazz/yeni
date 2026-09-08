@@ -33,6 +33,13 @@ class LiquidationTracker:
         self.threshold_usdt = threshold_usdt
         self._events: deque[tuple[float, str, float]] = deque()  # (ts, side, usdt_value)
 
+    def update_threshold(self, threshold_usdt: float) -> None:
+        """Eşiği dışarıdan (ör. sembolün 24s hacminin bir yüzdesi olarak) günceller.
+        Sabit 1M USDT, hacmi düşük bir altcoin için devasa ama BTC için sıradan bir
+        gürültü olabileceğinden, engine bunu her REST poll döngüsünde dinamik olarak
+        çağırır (bkz. WhaleTrapEngine.poll_once)."""
+        self.threshold_usdt = threshold_usdt
+
     def add_liquidation(self, side: str, quantity: float, price: float, timestamp: float | None = None) -> None:
         ts = timestamp if timestamp is not None else time.time()
         usdt_value = quantity * price
@@ -55,22 +62,43 @@ class LiquidationTracker:
         short_liquidated = sum(v for _, side, v in self._events if side == "BUY")
 
         if short_liquidated >= self.threshold_usdt:
-            return ModuleSignal(
-                True,
-                100,
-                f"Son {self.window_seconds:.0f}sn'de ${short_liquidated:,.0f} SHORT pozisyon likide oldu "
-                "— tersine (LONG) tepki ihtimali",
-                direction="LONG",
-            )
+            return self._build_signal(short_liquidated, liquidated_side="SHORT", reaction_direction="LONG")
         if long_liquidated >= self.threshold_usdt:
-            return ModuleSignal(
-                True,
-                100,
-                f"Son {self.window_seconds:.0f}sn'de ${long_liquidated:,.0f} LONG pozisyon likide oldu "
-                "— tersine (SHORT) tepki ihtimali",
-                direction="SHORT",
-            )
+            return self._build_signal(long_liquidated, liquidated_side="LONG", reaction_direction="SHORT")
         return ModuleSignal(False, 0, "Anormal likidasyon yok")
+
+    def _build_signal(self, total_usdt: float, liquidated_side: str, reaction_direction: str) -> ModuleSignal:
+        if self._is_still_accelerating(liquidated_side):
+            return ModuleSignal(
+                False,
+                0,
+                f"${total_usdt:,.0f} {liquidated_side} likide oldu ama şelale HÂLÂ HIZLANIYOR "
+                "— tersine tepki için erken (bıçağı tutma riski, zincirleme likidasyon devam ediyor olabilir)",
+            )
+        return ModuleSignal(
+            True,
+            100,
+            f"Son {self.window_seconds:.0f}sn'de ${total_usdt:,.0f} {liquidated_side} pozisyon likide oldu, "
+            f"hız yavaşlıyor — tersine ({reaction_direction}) tepki ihtimali",
+            direction=reaction_direction,
+        )
+
+    def _is_still_accelerating(self, liquidated_side: str) -> bool:
+        """Likidasyon şelalesi hâlâ hızlanıyor mu? Pencereyi ikiye bölüp (yeni yarı / eski
+        yarı) ilgili tarafın hacmini karşılaştırır. Yeni yarı eskisinden büyükse şelale
+        henüz durmamış demektir — 'cascading liquidation' ortasında ters yöne (bıçağı
+        tutmaya çalışarak) tetik vermek yerine önce hızın kesilmesini bekleriz.
+        Karşılaştıracak eski veri yoksa (tek seferlik/ilk olay) engelleme yapmayız."""
+        if not self._events:
+            return False
+        now = self._events[-1][0]
+        midpoint = now - self.window_seconds / 2
+        order_side = "SELL" if liquidated_side == "LONG" else "BUY"
+        recent = sum(v for ts, side, v in self._events if side == order_side and ts >= midpoint)
+        older = sum(v for ts, side, v in self._events if side == order_side and ts < midpoint)
+        if older == 0:
+            return False
+        return recent > older
 
 
 class LiquidationStreamListener:

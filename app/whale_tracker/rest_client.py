@@ -27,3 +27,13 @@ async def fetch_recent_klines(client: httpx.AsyncClient, symbol: str, interval: 
     )
     response.raise_for_status()
     return response.json()
+
+
+async def fetch_24h_quote_volume(client: httpx.AsyncClient, symbol: str) -> float:
+    """GET /fapi/v1/ticker/24hr — sembolün 24 saatlik toplam quote (USDT) hacmi.
+    Likidasyon eşiğini sabit bir USDT tutarı yerine sembolün kendi hacmine göre dinamik
+    ölçeklemek için kullanılır (BTC için sıradan olan 1M USDT'lik bir likidasyon, hacmi
+    düşük bir altcoin için devasa olabilir). API key gerekmez."""
+    response = await client.get("/fapi/v1/ticker/24hr", params={"symbol": symbol})
+    response.raise_for_status()
+    return float(response.json()["quoteVolume"])
