@@ -58,13 +58,14 @@ def test_market_tab_refresh_uses_selected_period(qapp):
     assert called_periods[-1] == "1h"
 
 
-def test_main_window_has_market_and_transfers_tabs(qapp, db, user):
+def test_main_window_has_expected_tabs(qapp, db, user):
     with patch("app.repository.get_market_overview", return_value=[]):
         window = MainWindow(user.id, user.email)
         window.market_tab._worker.wait()
         qapp.processEvents()
 
     tabs = window.findChild(QTabWidget)
-    assert tabs.count() == 2
+    assert tabs.count() == 3
     assert tabs.tabText(0) == "Piyasa"
     assert tabs.tabText(1) == "Transferler"
+    assert tabs.tabText(2) == "Tuzak Skoru"

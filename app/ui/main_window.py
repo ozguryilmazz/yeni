@@ -1,9 +1,11 @@
 from uuid import UUID
 
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QTabWidget, QVBoxLayout, QWidget
 
 from app.ui.market_tab import MarketTab
 from app.ui.transfers_tab import TransfersTab
+from app.ui.whale_tracker_tab import WhaleTrapTab
 
 
 class MainWindow(QMainWindow):
@@ -22,10 +24,12 @@ class MainWindow(QMainWindow):
 
         self.market_tab = MarketTab()
         self.transfers_tab = TransfersTab(user_id)
+        self.whale_trap_tab = WhaleTrapTab()
 
         tabs = QTabWidget()
         tabs.addTab(self.market_tab, "Piyasa")
         tabs.addTab(self.transfers_tab, "Transferler")
+        tabs.addTab(self.whale_trap_tab, "Tuzak Skoru")
         layout.addWidget(tabs)
 
     def _build_header(self) -> QHBoxLayout:
@@ -33,3 +37,9 @@ class MainWindow(QMainWindow):
         header.addWidget(QLabel(f"Giriş yapan: {self.user_email}"))
         header.addStretch()
         return header
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        # Tuzak Skoru sekmesi açık bir WebSocket/asyncio thread'i tutuyor olabilir;
+        # pencere kapanmadan önce bunun düzgün sonlanmasını sağla.
+        self.whale_trap_tab.stop_tracking()
+        super().closeEvent(event)

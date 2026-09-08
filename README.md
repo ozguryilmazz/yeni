@@ -10,13 +10,29 @@ uygulaması**. Genel yol haritası için bkz. [PLAN.md](./PLAN.md).
 
 ## Özellikler
 
-- İki sekmeli ana pencere: **Piyasa** (herkese açık futures verisi) ve **Transferler**
-  (hesap bağlama, bakiyeler, cüzdanlar arası transfer)
+- Üç sekmeli ana pencere: **Piyasa** (herkese açık futures verisi), **Transferler**
+  (hesap bağlama, bakiyeler, cüzdanlar arası transfer) ve **Tuzak Skoru** (whale
+  trap & likidite takibi)
 - **Piyasa** sekmesi: USDT-M perpetual futures'ta işlem gören tüm coinleri seçilen dönemdeki
   (son 1 saat / 4 saat / 24 saat) işlem hacmine ve fiyat değişim yüzdesine göre listeler;
   sütun başlıklarına tıklayarak sıralama değiştirilebilir. Binance hesabı bağlamaya gerek yok
   (public veri); tek bir sembolün isteği başarısız olursa (ağ hatası/zaman aşımı) o sembol
   atlanır, tüm liste beklemez
+- **Tuzak Skoru** sekmesi: tek bir sembol için (ör. BTCUSDT) teknik indikatör (RSI/MACD/MA)
+  kullanmadan, tamamen piyasa yapıcı davranışına dayalı canlı bir "Whale Trap & Liquidity
+  Tracker" izleyicisi:
+  - **Open Interest & Hacim Diverjansı** — fiyat yatayken (1s değişim < %0.5) OI'nin
+    >%5 artması "sıkışma/birikim" olarak işaretlenir (`GET /fapi/v1/openInterest`)
+  - **Funding Rate Anomalisi** — funding rate < -%0.03 ise LONG squeeze ihtimali,
+    > +%0.05 ise SHORT squeeze ihtimali (`GET /fapi/v1/premiumIndex`)
+  - **Anlık Likidasyon Dinleyici** — son 60 saniyede 1.000.000 USDT üzeri likidasyon
+    olursa, likide olan yönün TERSİNE bir tetik sinyali üretir
+    (`wss://fstream.binance.com/ws/!forceOrder@arr`)
+  - **Emir Defteri Dengesizliği** — bid/ask hacim oranı > 2.5 yukarı baskı, < 0.4 aşağı
+    baskı sinyali üretir (`wss://fstream.binance.com/ws/<symbol>@depth20@100ms`)
+  - Tüm modüller + hacim patlaması verisi bir **Tuzak Skoru** (Trap Scorer) ile 0-100
+    arası tek bir skora ve yöne (LONG/SHORT) indirgenir; sadece bilgi amaçlıdır,
+    otomatik işlem açmaz
 - Aynı bilgisayarda birden fazla profil/hesap için basit bir giriş sistemi (local, şifreler bcrypt ile hash'lenir)
 - Binance API key/secret'ı local SQLite'ta Fernet ile şifreli saklama; ana şifreleme
   anahtarı işletim sisteminin güvenli kimlik bilgisi deposunda tutulur (Windows Credential
@@ -59,6 +75,10 @@ macOS'ta `~/Library/Application Support/BinanceWalletManager` / Windows'ta
 4. Bağlandıktan sonra Spot/Futures/Funding bakiyelerinizi **Yenile** butonuyla görün.
 5. **Cüzdanlar Arası Transfer** bölümünden küçük bir miktarla (ör. 1 USDT) deneme yapın —
    bu gerçek bir fon hareketi yaratır.
+6. **Tuzak Skoru** sekmesinde bir sembol girip (ör. BTCUSDT) **İzlemeyi Başlat**'a
+   basın; Binance hesabı bağlamaya gerek yoktur (sadece public REST/WebSocket veri
+   kullanılır). Skor ve modül detayları canlı güncellenir, **Durdur** ile
+   bağlantılar kapatılır. Bu sekme bilgi amaçlıdır ve otomatik işlem açmaz.
 
 ## Proje Yapısı
 
@@ -74,11 +94,23 @@ app/
   transfer_types.py   # Cüzdan tipleri ve Binance transfer tip eşlemesi
   repository.py       # İş mantığı (auth, credential, wallet, transfer, piyasa verisi)
   workers.py          # Ağ çağrılarını arayüzü kilitlemeden çalıştıran QThread'ler
+  whale_tracker/      # "Tuzak Skoru": OI/funding/likidasyon/orderbook modülleri + scorer
+    models.py           # ModuleSignal / TrapScoreResult veri sınıfları
+    open_interest.py    # Modül A: OI & hacim diverjansı
+    funding_rate.py      # Modül B: funding rate anomalisi
+    liquidation.py       # Modül C: !forceOrder@arr likidasyon dinleyici
+    orderbook.py          # Modül D: emir defteri dengesizliği
+    volume_surge.py        # Hacim patlaması modülü
+    scorer.py                # TrapScorer: modülleri 0-100 tek skora indirger
+    rest_client.py             # Async Binance Futures REST çağrıları (OI/funding/klines)
+    engine.py                    # WhaleTrapEngine: REST polling + WS dinleyicileri orkestre eder
+    qt_bridge.py                  # WhaleTrackerThread: asyncio döngüsünü Qt sinyallerine bağlar
   ui/
     login_window.py   # Giriş / kayıt ekranı
-    main_window.py     # Ana pencere: sekmeler (Piyasa, Transferler) + üst bilgi
+    main_window.py     # Ana pencere: sekmeler (Piyasa, Transferler, Tuzak Skoru) + üst bilgi
     market_tab.py       # Piyasa sekmesi: futures hacim tablosu (1s/4s/24s, sıralanabilir)
     transfers_tab.py    # Transferler sekmesi: bağlı hesaplar, bakiyeler, transfer
+    whale_tracker_tab.py # Tuzak Skoru sekmesi: canlı skor, modül detayları, olay günlüğü
 tests/                # pytest paketi (Binance çağrıları mock'lanarak)
 ```
 
@@ -89,9 +121,11 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-37 test: auth (kayıt/giriş), credential bağlama (withdrawal reddi, şifreleme, silme),
+63 test: auth (kayıt/giriş), credential bağlama (withdrawal reddi, şifreleme, silme),
 bakiye normalize etme, transfer (yön eşlemesi, başarı/başarısızlık loglama, geçmiş),
-piyasa verisi (sembol filtreleme, hacim hesaplama, sıralama) ve sekme yapısı.
+piyasa verisi (sembol filtreleme, hacim hesaplama, sıralama), sekme yapısı ve Tuzak
+Skoru modülleri (OI/funding/likidasyon/orderbook mantığı, WebSocket mesaj ayrıştırma,
+engine orkestrasyonu — hepsi mock'lu, gerçek ağ/WebSocket bağlantısı gerektirmez).
 
 ## Güvenlik
 
