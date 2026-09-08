@@ -84,10 +84,13 @@ class LiquidationStreamListener:
         self.on_event = on_event
 
     async def run(self, stop_event: asyncio.Event) -> None:
-        import websockets  # noqa: PLC0415 - opsiyonel/ağır bağımlılık, sadece kullanıldığında import edilir
-
         while not stop_event.is_set():
             try:
+                # `websockets` import'u bilerek try/except içinde: paket eksikse
+                # (ModuleNotFoundError) veya başka bir başlangıç hatası olursa bu artık
+                # görev sessizce ölmek yerine Olay Günlüğü'nde görünür olur ve yeniden dener.
+                import websockets  # noqa: PLC0415 - opsiyonel/ağır bağımlılık, sadece kullanıldığında import edilir
+
                 async with websockets.connect(LIQUIDATION_STREAM_URL, ping_interval=180, ping_timeout=600) as ws:
                     while not stop_event.is_set():
                         try:
@@ -98,7 +101,7 @@ class LiquidationStreamListener:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - WS bağlantı hatası; yeniden denenecek
-                self._log_event("Liquidation", f"WS bağlantı hatası, 5sn sonra yeniden denenecek: {exc}")
+                self._log_event("liquidation", f"WS bağlantı hatası, 5sn sonra yeniden denenecek: {exc}")
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=5)
                 except asyncio.TimeoutError:
@@ -118,9 +121,9 @@ class LiquidationStreamListener:
             self.tracker.add_liquidation(side, quantity, price)
 
             usdt_value = quantity * price
-            self._log_event("Liquidation", f"{symbol} {side} likidasyon: {quantity} @ {price} (${usdt_value:,.0f})")
+            self._log_event("liquidation", f"{symbol} {side} likidasyon: {quantity} @ {price} (${usdt_value:,.0f})")
         except Exception as exc:  # noqa: BLE001 - bozuk/beklenmeyen mesaj formatı
-            self._log_event("Liquidation", f"Mesaj ayrıştırma hatası: {exc}")
+            self._log_event("liquidation", f"Mesaj ayrıştırma hatası: {exc}")
 
     def _log_event(self, module: str, message: str) -> None:
         if self.on_event is not None:

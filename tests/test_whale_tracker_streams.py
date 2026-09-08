@@ -31,7 +31,7 @@ def test_liquidation_listener_parses_matching_symbol():
     signal = tracker.evaluate()
     assert signal.triggered is True
     assert signal.direction == "SHORT"  # LONG likide oldu -> tersine SHORT
-    assert any(e["module"] == "Liquidation" for e in events)
+    assert any(e["module"] == "liquidation" for e in events)
 
 
 def test_liquidation_listener_ignores_other_symbols():
@@ -52,6 +52,35 @@ def test_liquidation_listener_handles_malformed_message_gracefully():
     listener.handle_message("not-json-at-all")
 
     assert any("ayrıştırma hatası" in e["message"] for e in events)
+
+
+def test_liquidation_listener_surfaces_missing_websockets_dependency(monkeypatch):
+    """`websockets` paketi kurulu değilse (veya import başka bir nedenle patlarsa) görev
+    artık sessizce ölmüyor; hata Olay Günlüğü'ne düşüyor ve döngü yeniden deniyor —
+    kullanıcının 'Emir Defteri: Henüz veri yok' gibi kalıcı, açıklanamayan bir durumla
+    baş başa kalmasını önlüyor."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "websockets", None)
+
+    tracker = LiquidationTracker()
+    events: list[dict] = []
+    listener = LiquidationStreamListener("BTCUSDT", tracker, on_event=events.append)
+
+    async def scenario() -> None:
+        stop_event = asyncio.Event()
+
+        async def stop_soon() -> None:
+            await asyncio.sleep(0.05)
+            stop_event.set()
+
+        await asyncio.gather(listener.run(stop_event), stop_soon())
+
+    asyncio.run(scenario())
+
+    assert events, "websockets eksikken hiçbir hata loglanmadı — görev sessizce ölmüş olabilir"
+    assert all(e["module"] == "liquidation" for e in events)
+    assert any("bağlantı hatası" in e["message"] for e in events)
 
 
 # ---- OrderbookStreamListener.handle_message -------------------------------
@@ -78,6 +107,34 @@ def test_orderbook_listener_handles_malformed_message_gracefully():
     listener.handle_message("garbage", lambda signal: None)
 
     assert any("ayrıştırma hatası" in e["message"] for e in events)
+
+
+def test_orderbook_listener_surfaces_missing_websockets_dependency(monkeypatch):
+    """LiquidationStreamListener'daki aynı sessiz-ölüm hatası burada da vardı: `websockets`
+    import'u try/except dışındaydı, bu yüzden paket eksikse görev hiç loglamadan ölüyor ve
+    Emir Defteri sekmesi sonsuza kadar 'Henüz veri yok' gösteriyordu."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "websockets", None)
+
+    module = OrderbookImbalanceModule()
+    events: list[dict] = []
+    listener = OrderbookStreamListener("BTCUSDT", module, on_event=events.append)
+
+    async def scenario() -> None:
+        stop_event = asyncio.Event()
+
+        async def stop_soon() -> None:
+            await asyncio.sleep(0.05)
+            stop_event.set()
+
+        await asyncio.gather(listener.run(stop_event, lambda signal: None), stop_soon())
+
+    asyncio.run(scenario())
+
+    assert events, "websockets eksikken hiçbir hata loglanmadı — görev sessizce ölmüş olabilir"
+    assert all(e["module"] == "orderbook" for e in events)
+    assert any("bağlantı hatası" in e["message"] for e in events)
 
 
 # ---- WhaleTrapEngine.poll_once (REST orkestrasyonu) ------------------------

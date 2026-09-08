@@ -42,10 +42,13 @@ class OrderbookStreamListener:
         self.url = f"wss://fstream.binance.com/ws/{self.symbol}@depth20@100ms"
 
     async def run(self, stop_event: asyncio.Event, on_signal: Callable[[ModuleSignal], None]) -> None:
-        import websockets  # noqa: PLC0415 - opsiyonel/ağır bağımlılık, sadece kullanıldığında import edilir
-
         while not stop_event.is_set():
             try:
+                # `websockets` import'u bilerek try/except içinde: paket eksikse
+                # (ModuleNotFoundError) veya başka bir başlangıç hatası olursa bu artık
+                # görev sessizce ölmek yerine Olay Günlüğü'nde görünür olur ve yeniden dener.
+                import websockets  # noqa: PLC0415 - opsiyonel/ağır bağımlılık, sadece kullanıldığında import edilir
+
                 async with websockets.connect(self.url, ping_interval=180, ping_timeout=600) as ws:
                     while not stop_event.is_set():
                         try:
@@ -56,7 +59,7 @@ class OrderbookStreamListener:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - WS bağlantı hatası; yeniden denenecek
-                self._log_event("Orderbook", f"WS bağlantı hatası, 5sn sonra yeniden denenecek: {exc}")
+                self._log_event("orderbook", f"WS bağlantı hatası, 5sn sonra yeniden denenecek: {exc}")
                 try:
                     await asyncio.wait_for(stop_event.wait(), timeout=5)
                 except asyncio.TimeoutError:
@@ -72,7 +75,7 @@ class OrderbookStreamListener:
             signal = self.module.evaluate(bid_volume, ask_volume)
             on_signal(signal)
         except Exception as exc:  # noqa: BLE001 - bozuk/beklenmeyen mesaj formatı
-            self._log_event("Orderbook", f"Mesaj ayrıştırma hatası: {exc}")
+            self._log_event("orderbook", f"Mesaj ayrıştırma hatası: {exc}")
 
     def _log_event(self, module: str, message: str) -> None:
         if self.on_event is not None:
