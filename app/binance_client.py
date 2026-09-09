@@ -146,7 +146,7 @@ def get_futures_kline_stats(symbol: str, interval: str, client: httpx.Client | N
     }
 
 
-_INTERVAL_MS = {
+INTERVAL_MS_MAP = {
     "1m": 60_000,
     "3m": 180_000,
     "5m": 300_000,
@@ -169,7 +169,7 @@ def get_futures_historical_klines(
     çeker (tek istek en fazla 1500 mum döner). Backtest için geçmiş veri toplarken
     kullanılır; `get_futures_kline_stats`'in aksine sınırsız uzunlukta bir aralığı
     kapsayabilir."""
-    interval_ms = _INTERVAL_MS[interval]
+    interval_ms = INTERVAL_MS_MAP[interval]
     limit = 1500
     owns_client = client is None
     if owns_client:

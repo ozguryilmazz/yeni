@@ -10,6 +10,12 @@ EMA_FAST_PERIOD = 9
 EMA_SLOW_PERIOD = 21
 ATR_PERIOD = 14
 ENTRY_BAND_ATR_MULT = 0.5
+# EMA100'ün yönünü değil eğimini de teyit eder: fiyat EMA100'ün üstünde/altında
+# olması tek başına yeterli sayılmaz, EMA100'ün kendisi de TREND_SLOPE_LOOKBACK
+# mum önceki değerine göre en az MIN_TREND_SLOPE_ATR_MULT×ATR kadar aynı yönde
+# hareket etmiş olmalı — aksi halde piyasa yatay (chop) kabul edilip işlem açılmaz.
+TREND_SLOPE_LOOKBACK = 20
+MIN_TREND_SLOPE_ATR_MULT = 0.5
 SL_FEE_MULT = 2.0
 TP_FEE_MULT = 4.0
 # SL=TP simetrik "nötr" test için: iki tarafı da aynı mesafeye koyup entry
@@ -93,6 +99,7 @@ def run_backtest(
     ema_slow = ema(closes, EMA_SLOW_PERIOD)
     ema_trend = ema(closes, EMA_TREND_PERIOD)
     atr_values = atr(highs, lows, closes, ATR_PERIOD)
+    trend_slope = _compute_trend_slope(ema_trend)
 
     trades: list[Trade] = []
     balance = STARTING_BALANCE_USD
@@ -127,7 +134,13 @@ def run_backtest(
                 continue
 
         if position is None and candle.open_time_ms >= start_time_ms:
-            if ema_fast[i] is None or ema_slow[i] is None or ema_trend[i] is None or atr_values[i] is None:
+            if (
+                ema_fast[i] is None
+                or ema_slow[i] is None
+                or ema_trend[i] is None
+                or atr_values[i] is None
+                or trend_slope[i] is None
+            ):
                 continue
             if balance < MARGIN_USD:
                 stopped_early = True
@@ -138,6 +151,7 @@ def run_backtest(
                 ema_slow[i],
                 ema_trend[i],
                 atr_values[i],
+                trend_slope[i],
                 reverse=reverse,
                 sl_fee_mult=sl_fee_mult,
                 tp_fee_mult=tp_fee_mult,
@@ -151,12 +165,27 @@ def run_backtest(
     )
 
 
+def _compute_trend_slope(ema_trend: list[float | None]) -> list[float | None]:
+    """EMA100'ün TREND_SLOPE_LOOKBACK mum önceki değerine göre ne kadar
+    değiştiğini (fiyat biriminde) döner. Pozitif = yükseliyor, negatif =
+    düşüyor, sıfıra yakın = yatay (chop). İki ucundan biri hazır değilse None."""
+    n = len(ema_trend)
+    slope: list[float | None] = [None] * n
+    for i in range(TREND_SLOPE_LOOKBACK, n):
+        current = ema_trend[i]
+        past = ema_trend[i - TREND_SLOPE_LOOKBACK]
+        if current is not None and past is not None:
+            slope[i] = current - past
+    return slope
+
+
 def _try_open_position(
     candle: Candle,
     ema_fast_v: float,
     ema_slow_v: float,
     ema_trend_v: float,
     atr_v: float,
+    trend_slope_v: float,
     reverse: bool = False,
     sl_fee_mult: float = SL_FEE_MULT,
     tp_fee_mult: float = TP_FEE_MULT,
@@ -169,11 +198,17 @@ def _try_open_position(
     if not (band_low <= candle.close <= band_high):
         return None
 
-    if candle.close > ema_trend_v:
+    min_slope = MIN_TREND_SLOPE_ATR_MULT * atr_v
+    is_uptrend = candle.close > ema_trend_v and trend_slope_v >= min_slope
+    is_downtrend = candle.close < ema_trend_v and trend_slope_v <= -min_slope
+
+    if is_uptrend:
         side = "SHORT" if reverse else "LONG"
-    elif candle.close < ema_trend_v:
+    elif is_downtrend:
         side = "LONG" if reverse else "SHORT"
     else:
+        # Yön EMA100'e göre belli ama EMA100'ün kendisi yeterince eğimli değil
+        # (yatay/chop piyasa) -> whipsaw riskinden kaçınmak için işlem açılmaz.
         return None
 
     entry_price = candle.close

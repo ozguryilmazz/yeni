@@ -18,10 +18,11 @@ from PySide6.QtWidgets import (
 )
 
 from app.backtest.engine import BacktestResult, Trade
-from app.backtest.service import BacktestComparison
+from app.backtest.service import DEFAULT_INTERVAL, BacktestComparison
 from app.workers import RunBacktestWorker
 
 EXIT_REASON_LABELS = {"TP": "TP", "SL": "SL", "EOD": "Veri Sonu"}
+INTERVAL_LABELS = {"5m": "5 Dakika", "15m": "15 Dakika", "1h": "1 Saat"}
 
 
 def _format_ms(ms: int) -> str:
@@ -29,11 +30,11 @@ def _format_ms(ms: int) -> str:
 
 
 class BacktestTab(QWidget):
-    """'Backtest' sekmesi: seçilen coin ve tarih aralığında 5 dakikalık mumlar
-    üzerinde 'Esnetilmiş 5D Scalp Stratejisi'ni (EMA9/21/100 + ATR14) simüle eder.
-    Aynı veri üzerinde stratejinin ürettiği sinyalin TERSİ de hesaplanıp yan yana
-    gösterilir. Gerçek işlem açmaz; sadece geçmiş veri üzerinde ne olurdu'yu
-    gösterir."""
+    """'Backtest' sekmesi: seçilen coin, tarih aralığı ve zaman diliminde
+    'Esnetilmiş 5D Scalp Stratejisi'ni (EMA9/21/100 + ATR14 + trend eğim filtresi)
+    simüle eder. Aynı veri üzerinde stratejinin ürettiği sinyalin TERSİ ve
+    SL=TP simetrik NÖTR varyantı da hesaplanıp yan yana gösterilir. Gerçek
+    işlem açmaz; sadece geçmiş veri üzerinde ne olurdu'yu gösterir."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -51,6 +52,13 @@ class BacktestTab(QWidget):
         self.paste_button = QPushButton("Yapıştır")
         self.paste_button.clicked.connect(self._handle_paste)
         controls.addWidget(self.paste_button)
+
+        controls.addWidget(QLabel("Zaman Dilimi"))
+        self.interval_combo = QComboBox()
+        for interval, label in INTERVAL_LABELS.items():
+            self.interval_combo.addItem(label, interval)
+        self.interval_combo.setCurrentIndex(self.interval_combo.findData(DEFAULT_INTERVAL))
+        controls.addWidget(self.interval_combo)
 
         controls.addWidget(QLabel("Başlangıç"))
         self.start_input = QDateTimeEdit(QDateTime.currentDateTimeUtc().addDays(-7))
@@ -71,18 +79,20 @@ class BacktestTab(QWidget):
         layout.addLayout(controls)
 
         hint = QLabel(
-            "5 dakikalık mumlarda 'Esnetilmiş 5D Scalp' stratejisi: Fiyat EMA100 üzerindeyse "
-            "LONG, altındaysa SHORT yönü aranır; fiyat EMA9/EMA21 bölgesine ATR14'ün ±0.5 katı "
-            "toleransla çekildiğinde giriş yapılır. Her işlem 2$ margin / 5x kaldıraç (10$ "
-            "pozisyon büyüklüğü) ile 100$ bakiye üzerinden simüle edilir; açılış ve kapanışta "
-            "%0.05 taker komisyonu uygulanır. SL/TP, o işlemin toplam (giriş+çıkış) komisyon "
-            "maliyetinin katları olarak hesaplanır: SL 2 katı, TP 4 katı uzaktadır. "
-            "Tarihler UTC (Binance sunucu saati) olarak yorumlanır. Aynı veri üzerinde iki "
-            "karşılaştırma daha otomatik hesaplanıp aşağıda gösterilir: TERSİ (LONG↔SHORT, "
-            "SL/TP ters yönde entry'den yeniden hesaplanır) ve NÖTR (SL=TP simetrik mesafe — "
-            "hangi tarafın entry'ye daha yakın olduğu kazanma oranını çarpıttığından, entry "
-            "sinyalinin ham yön başarısını bu çarpıklıktan arındırılmış görmek içindir). Bu "
-            "sekme sadece geçmiş veri üzerinde simülasyon yapar, gerçek işlem açmaz."
+            "Seçilen zaman diliminde 'Esnetilmiş 5D Scalp' stratejisi: Fiyat EMA100 üzerindeyse "
+            "LONG, altındaysa SHORT yönü aranır — ama EMA100'ün kendisi de son 20 mumda en az "
+            "0.5×ATR kadar aynı yönde eğimli olmalı (yatay/chop piyasada işlem açılmaz). Fiyat "
+            "EMA9/EMA21 bölgesine ATR14'ün ±0.5 katı toleransla çekildiğinde giriş yapılır. Her "
+            "işlem 2$ margin / 5x kaldıraç (10$ pozisyon büyüklüğü) ile 100$ bakiye üzerinden "
+            "simüle edilir; açılış ve kapanışta %0.05 taker komisyonu uygulanır. SL/TP, o "
+            "işlemin toplam (giriş+çıkış) komisyon maliyetinin katları olarak hesaplanır: SL 2 "
+            "katı, TP 4 katı uzaktadır. Tarihler UTC (Binance sunucu saati) olarak yorumlanır. "
+            "Aynı veri üzerinde iki karşılaştırma daha otomatik hesaplanıp aşağıda gösterilir: "
+            "TERSİ (LONG↔SHORT, SL/TP ters yönde entry'den yeniden hesaplanır) ve NÖTR (SL=TP "
+            "simetrik mesafe — hangi tarafın entry'ye daha yakın olduğu kazanma oranını "
+            "çarpıttığından, entry sinyalinin ham yön başarısını bu çarpıklıktan arındırılmış "
+            "görmek içindir). Bu sekme sadece geçmiş veri üzerinde simülasyon yapar, gerçek "
+            "işlem açmaz."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -162,7 +172,8 @@ class BacktestTab(QWidget):
         self.neutral_summary_label.setText("Çalışıyor…")
         self.trade_table.setRowCount(0)
 
-        self._worker = RunBacktestWorker(symbol, start, end)
+        interval = self.interval_combo.currentData()
+        self._worker = RunBacktestWorker(symbol, start, end, interval)
         self._worker.success.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
         self._worker.start()

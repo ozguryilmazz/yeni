@@ -114,6 +114,26 @@ def test_successful_run_renders_both_summaries_and_defaults_to_normal_trade_tabl
     assert tab.trade_table.rowCount() == 3
 
 
+def test_interval_combo_defaults_to_5m_with_three_options(qapp):
+    tab = BacktestTab()
+
+    assert tab.interval_combo.currentData() == "5m"
+    assert {tab.interval_combo.itemData(i) for i in range(tab.interval_combo.count())} == {"5m", "15m", "1h"}
+
+
+def test_run_passes_selected_interval_to_backtest_comparison(qapp):
+    with patch("app.workers.run_backtest_comparison") as mock_comparison:
+        tab = BacktestTab()
+        one_hour_index = tab.interval_combo.findData("1h")
+        tab.interval_combo.setCurrentIndex(one_hour_index)
+
+        tab._handle_run()
+        tab._worker.wait()
+        qapp.processEvents()
+
+    assert mock_comparison.call_args.kwargs["interval"] == "1h"
+
+
 def test_run_error_shows_warning_and_reenables_button(qapp):
     with patch("app.workers.run_backtest_comparison", side_effect=RuntimeError("boom")):
         with patch("app.ui.backtest_tab.QMessageBox.warning") as mock_warning:

@@ -2,10 +2,10 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.backtest.engine import EMA_TREND_PERIOD, NEUTRAL_FEE_MULT, BacktestResult, Candle, run_backtest
-from app.binance_client import get_futures_historical_klines
+from app.binance_client import INTERVAL_MS_MAP, get_futures_historical_klines
 
-INTERVAL = "5m"
-INTERVAL_MS = 5 * 60_000
+DEFAULT_INTERVAL = "5m"
+SUPPORTED_INTERVALS = ["5m", "15m", "1h"]
 # EMA100'ün ilk mumlardaki seed sapmasını azaltmak için seçilen aralıktan önce
 # ekstra ısınma mumu çekilir; bu mumlarda pozisyon açılmaz, yalnızca indikatörleri beslerler.
 WARMUP_CANDLES = EMA_TREND_PERIOD * 3
@@ -18,14 +18,15 @@ class BacktestComparison:
     neutral: BacktestResult
 
 
-def _fetch_candles(symbol: str, start: datetime, end: datetime) -> tuple[list[Candle], int]:
+def _fetch_candles(symbol: str, start: datetime, end: datetime, interval: str) -> tuple[list[Candle], int]:
     start_ms = int(start.timestamp() * 1000)
     end_ms = int(end.timestamp() * 1000)
     if start_ms >= end_ms:
         raise ValueError("Başlangıç tarihi bitiş tarihinden önce olmalı")
 
-    fetch_start_ms = start_ms - WARMUP_CANDLES * INTERVAL_MS
-    raw_klines = get_futures_historical_klines(symbol.upper(), INTERVAL, fetch_start_ms, end_ms)
+    interval_ms = INTERVAL_MS_MAP[interval]
+    fetch_start_ms = start_ms - WARMUP_CANDLES * interval_ms
+    raw_klines = get_futures_historical_klines(symbol.upper(), interval, fetch_start_ms, end_ms)
     if not raw_klines:
         raise ValueError("Seçilen aralık için mum verisi bulunamadı")
 
@@ -42,12 +43,16 @@ def _fetch_candles(symbol: str, start: datetime, end: datetime) -> tuple[list[Ca
     return candles, start_ms
 
 
-def run_backtest_for_symbol(symbol: str, start: datetime, end: datetime, reverse: bool = False) -> BacktestResult:
-    candles, start_ms = _fetch_candles(symbol, start, end)
+def run_backtest_for_symbol(
+    symbol: str, start: datetime, end: datetime, interval: str = DEFAULT_INTERVAL, reverse: bool = False
+) -> BacktestResult:
+    candles, start_ms = _fetch_candles(symbol, start, end, interval)
     return run_backtest(candles, start_time_ms=start_ms, reverse=reverse)
 
 
-def run_backtest_comparison(symbol: str, start: datetime, end: datetime) -> BacktestComparison:
+def run_backtest_comparison(
+    symbol: str, start: datetime, end: datetime, interval: str = DEFAULT_INTERVAL
+) -> BacktestComparison:
     """Aynı mum verisi üzerinde üç varyantı tek seferde çalıştırır:
 
     - `normal`: stratejinin kendi sinyali (mevcut SL/TP komisyon çarpanlarıyla)
@@ -59,7 +64,7 @@ def run_backtest_comparison(symbol: str, start: datetime, end: datetime) -> Back
 
     Veri tek seferde çekilip üçünde de tekrar kullanılır.
     """
-    candles, start_ms = _fetch_candles(symbol, start, end)
+    candles, start_ms = _fetch_candles(symbol, start, end, interval)
     normal = run_backtest(candles, start_time_ms=start_ms, reverse=False)
     reversed_result = run_backtest(candles, start_time_ms=start_ms, reverse=True)
     neutral = run_backtest(
