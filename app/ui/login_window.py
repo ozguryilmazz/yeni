@@ -26,6 +26,8 @@ class LoginWindow(QWidget):
         layout = QVBoxLayout(self)
         layout.addWidget(tabs)
 
+        self.login_email.setFocus()
+
     def _build_login_tab(self) -> QWidget:
         widget = QWidget()
         self.login_email = QLineEdit()
@@ -38,6 +40,8 @@ class LoginWindow(QWidget):
 
         button = QPushButton("Giriş Yap")
         button.clicked.connect(self._handle_login)
+        self.login_email.returnPressed.connect(self._handle_login)
+        self.login_password.returnPressed.connect(self._handle_login)
 
         layout = QVBoxLayout(widget)
         layout.addLayout(form)
@@ -56,6 +60,8 @@ class LoginWindow(QWidget):
 
         button = QPushButton("Kayıt Ol")
         button.clicked.connect(self._handle_register)
+        self.register_email.returnPressed.connect(self._handle_register)
+        self.register_password.returnPressed.connect(self._handle_register)
 
         layout = QVBoxLayout(widget)
         layout.addLayout(form)

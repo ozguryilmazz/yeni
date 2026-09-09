@@ -6,10 +6,10 @@ from app.backtest.engine import Candle, run_backtest
 
 # Sabit test parametreleri: margin=2$, kaldıraç=5x -> notional=10$, quantity=0.1.
 # fee_per_side = 10 * 0.0005 = 0.005 -> total_fee (giriş+çıkış) = 0.01.
-# TP mesafesi (2x toplam komisyon) = 0.02 / 0.1 = 0.2 fiyat birimi.
-# SL mesafesi (4x toplam komisyon) = 0.04 / 0.1 = 0.4 fiyat birimi.
-TP_DISTANCE = 0.2
-SL_DISTANCE = 0.4
+# TP mesafesi (4x toplam komisyon) = 0.04 / 0.1 = 0.4 fiyat birimi.
+# SL mesafesi (2x toplam komisyon) = 0.02 / 0.1 = 0.2 fiyat birimi.
+TP_DISTANCE = 0.4
+SL_DISTANCE = 0.2
 
 
 def _run(candles, start_time_ms, ema_fast, ema_slow, ema_trend, atr_values, reverse=False):
@@ -56,7 +56,7 @@ def test_short_entry_and_stop_loss_hit():
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
         Candle(open_time_ms=300_000, open=100, high=100.5, low=100, close=100.3),
     ]
-    # EMA100=110 (close<trend -> SHORT) -> SL=entry+0.4, TP=entry-0.2 (bu mumda sadece SL vurulur).
+    # EMA100=110 (close<trend -> SHORT) -> SL=entry+0.2, TP=entry-0.4 (bu mumda sadece SL vurulur).
     result = _run(candles, 0, [100, 100], [100, 100], [110, 110], [2, 2])
 
     assert len(result.trades) == 1
@@ -84,7 +84,7 @@ def test_same_candle_tp_and_sl_band_prefers_stop_loss():
 def test_forced_close_at_end_of_data_when_neither_tp_nor_sl_hit():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
-        Candle(open_time_ms=300_000, open=100, high=100.1, low=99.7, close=100.05),
+        Candle(open_time_ms=300_000, open=100, high=100.1, low=99.85, close=100.05),
     ]
     result = _run(candles, 0, [100, 100], [100, 100], [90, 90], [2, 2])
 
@@ -97,7 +97,7 @@ def test_forced_close_at_end_of_data_when_neither_tp_nor_sl_hit():
 def test_only_one_position_open_at_a_time():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),  # giriş
-        Candle(open_time_ms=300_000, open=100, high=100.1, low=99.7, close=100),  # açık pozisyon, TP/SL yok
+        Candle(open_time_ms=300_000, open=100, high=100.1, low=99.85, close=100),  # açık pozisyon, TP/SL yok
         Candle(open_time_ms=600_000, open=100, high=101, low=100, close=100.5),  # TP burada vurulur
     ]
     # Her mumda sinyal koşulları teknik olarak sağlansa da (index1 dahil), pozisyon
