@@ -146,6 +146,56 @@ def get_futures_kline_stats(symbol: str, interval: str, client: httpx.Client | N
     }
 
 
+_INTERVAL_MS = {
+    "1m": 60_000,
+    "3m": 180_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+    "1h": 3_600_000,
+    "2h": 7_200_000,
+    "4h": 14_400_000,
+    "6h": 21_600_000,
+    "8h": 28_800_000,
+    "12h": 43_200_000,
+    "1d": 86_400_000,
+}
+
+
+def get_futures_historical_klines(
+    symbol: str, interval: str, start_ms: int, end_ms: int, client: httpx.Client | None = None
+) -> list[list]:
+    """GET /fapi/v1/klines — [start_ms, end_ms] aralığındaki TÜM mumları sayfalayarak
+    çeker (tek istek en fazla 1500 mum döner). Backtest için geçmiş veri toplarken
+    kullanılır; `get_futures_kline_stats`'in aksine sınırsız uzunlukta bir aralığı
+    kapsayabilir."""
+    interval_ms = _INTERVAL_MS[interval]
+    limit = 1500
+    owns_client = client is None
+    if owns_client:
+        client = httpx.Client(base_url=BINANCE_FUTURES_BASE_URL, timeout=15)
+
+    all_klines: list[list] = []
+    try:
+        cursor = start_ms
+        while cursor <= end_ms:
+            params = {"symbol": symbol, "interval": interval, "startTime": cursor, "endTime": end_ms, "limit": limit}
+            response = client.get("/fapi/v1/klines", params=params)
+            _raise_for_error(response)
+            batch = response.json()
+            if not batch:
+                break
+            all_klines.extend(batch)
+            cursor = int(batch[-1][0]) + interval_ms
+            if len(batch) < limit:
+                break
+    finally:
+        if owns_client:
+            client.close()
+
+    return all_klines
+
+
 def get_futures_market_overview(period: str) -> list[dict]:
     """USDT-M perpetual futures sembolleri için verilen dönemdeki anlık fiyatı, toplam işlem
     hacmini (USDT), yüzde fiyat değişimini ve bir önceki eşit uzunluktaki döneme göre yüzde

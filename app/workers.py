@@ -1,6 +1,9 @@
+from datetime import datetime
+
 from PySide6.QtCore import QThread, Signal
 
 from app import repository
+from app.backtest.service import run_backtest_for_symbol
 from app.database import session_scope
 
 
@@ -67,6 +70,25 @@ class LoadMarketOverviewWorker(QThread):
             self.error.emit(str(exc))
             return
         self.success.emit(overview)
+
+
+class RunBacktestWorker(QThread):
+    success = Signal(object)  # BacktestResult
+    error = Signal(str)
+
+    def __init__(self, symbol: str, start: datetime, end: datetime) -> None:
+        super().__init__()
+        self._symbol = symbol
+        self._start = start
+        self._end = end
+
+    def run(self) -> None:
+        try:
+            result = run_backtest_for_symbol(self._symbol, self._start, self._end)
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))
+            return
+        self.success.emit(result)
 
 
 class CreateTransferWorker(QThread):
