@@ -63,20 +63,22 @@ def test_flat_price_data_produces_no_trades_and_unchanged_balance():
     assert result.ending_balance_usd == pytest.approx(result.starting_balance_usd)
 
 
-def test_comparison_fetches_klines_only_once_and_returns_both_directions():
+def test_comparison_fetches_klines_only_once_and_returns_all_three_variants():
     start = datetime(2024, 1, 1, tzinfo=timezone.utc)
     end = datetime(2024, 1, 1, 1, tzinfo=timezone.utc)
 
     with patch("app.backtest.service.get_futures_historical_klines", return_value=_flat_klines(0, 400)) as mock_fetch:
         comparison = run_backtest_comparison("BTCUSDT", start, end)
 
-    mock_fetch.assert_called_once()  # veri tek seferde çekilip iki yönde de tekrar kullanılmalı
+    mock_fetch.assert_called_once()  # veri tek seferde çekilip üç varyantta da tekrar kullanılmalı
     assert isinstance(comparison, BacktestComparison)
     assert isinstance(comparison.normal, BacktestResult)
     assert isinstance(comparison.reversed, BacktestResult)
-    # Düz fiyatta ATR ~0 olduğundan iki yönde de işlem açılmamalı.
+    assert isinstance(comparison.neutral, BacktestResult)
+    # Düz fiyatta ATR ~0 olduğundan üç varyantta da işlem açılmamalı.
     assert comparison.normal.trades == []
     assert comparison.reversed.trades == []
+    assert comparison.neutral.trades == []
 
 
 def test_comparison_raises_when_start_is_not_before_end():

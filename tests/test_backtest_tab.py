@@ -73,6 +73,16 @@ def test_successful_run_renders_both_summaries_and_defaults_to_normal_trade_tabl
             ending_balance_usd=100.29,
             stopped_early=False,
         ),
+        neutral=BacktestResult(
+            trades=[
+                _make_trade("LONG", "TP", 0.1, 100.1),
+                _make_trade("LONG", "SL", -0.1, 100.0),
+                _make_trade("LONG", "TP", 0.1, 100.1),
+            ],
+            starting_balance_usd=100.0,
+            ending_balance_usd=100.1,
+            stopped_early=False,
+        ),
     )
 
     with patch("app.workers.run_backtest_comparison", return_value=comparison):
@@ -84,6 +94,7 @@ def test_successful_run_renders_both_summaries_and_defaults_to_normal_trade_tabl
     assert tab.run_button.isEnabled()
     assert "1" in tab.normal_summary_label.text()  # Toplam İşlem: 1
     assert "2" in tab.reversed_summary_label.text()  # Toplam İşlem: 2
+    assert "3" in tab.neutral_summary_label.text()  # Toplam İşlem: 3
 
     # Varsayılan olarak "Normal Yön" seçili -> tabloda tek satır (normal.trades) olmalı.
     assert tab.trade_table.rowCount() == 1
@@ -95,6 +106,12 @@ def test_successful_run_renders_both_summaries_and_defaults_to_normal_trade_tabl
 
     assert tab.trade_table.rowCount() == 2
     assert tab.trade_table.item(0, 0).text() == "SHORT"
+
+    # Seçimi "Nötr"e çevirince tablo neutral.trades'i göstermeli.
+    neutral_index = tab.result_selector.findData("neutral")
+    tab.result_selector.setCurrentIndex(neutral_index)
+
+    assert tab.trade_table.rowCount() == 3
 
 
 def test_run_error_shows_warning_and_reenables_button(qapp):

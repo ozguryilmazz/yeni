@@ -12,6 +12,10 @@ ATR_PERIOD = 14
 ENTRY_BAND_ATR_MULT = 0.5
 SL_FEE_MULT = 2.0
 TP_FEE_MULT = 4.0
+# SL=TP simetrik "nötr" test için: iki tarafı da aynı mesafeye koyup entry
+# sinyalinin (EMA9/21/100 + ATR bandı) ham yön başarısını, SL/TP mesafesinin
+# hangi tarafın daha sık vurulacağını etkilemesinden arındırarak ölçer.
+NEUTRAL_FEE_MULT = (SL_FEE_MULT + TP_FEE_MULT) / 2
 
 MARGIN_USD = 2.0
 LEVERAGE = 5
@@ -53,7 +57,13 @@ class BacktestResult:
     stopped_early: bool
 
 
-def run_backtest(candles: list[Candle], start_time_ms: int, reverse: bool = False) -> BacktestResult:
+def run_backtest(
+    candles: list[Candle],
+    start_time_ms: int,
+    reverse: bool = False,
+    sl_fee_mult: float = SL_FEE_MULT,
+    tp_fee_mult: float = TP_FEE_MULT,
+) -> BacktestResult:
     """Verilen mum dizisi üzerinde stratejiyi simüle eder.
 
     `candles`, indikatörlerin (özellikle EMA100) ısınması için `start_time_ms`'den
@@ -70,6 +80,10 @@ def run_backtest(candles: list[Candle], start_time_ms: int, reverse: bool = Fals
     yöne göre entry fiyatından yeniden hesaplanır — orijinal işlemin
     SL/TP'siyle basitçe yer değiştirmez, çünkü sonraki mumlarda fiyatın nereye
     gideceği bağımsız bir simülasyon gerektirir.
+
+    `sl_fee_mult`/`tp_fee_mult` varsayılan (modül sabiti) dışında bir SL/TP
+    komisyon çarpanıyla çalıştırmak için verilebilir — ör. `NEUTRAL_FEE_MULT`
+    ile ikisini eşitleyip "nötr" bir test çalıştırmak için.
     """
     closes = [c.close for c in candles]
     highs = [c.high for c in candles]
@@ -119,7 +133,14 @@ def run_backtest(candles: list[Candle], start_time_ms: int, reverse: bool = Fals
                 stopped_early = True
                 continue
             position = _try_open_position(
-                candle, ema_fast[i], ema_slow[i], ema_trend[i], atr_values[i], reverse=reverse
+                candle,
+                ema_fast[i],
+                ema_slow[i],
+                ema_trend[i],
+                atr_values[i],
+                reverse=reverse,
+                sl_fee_mult=sl_fee_mult,
+                tp_fee_mult=tp_fee_mult,
             )
 
     return BacktestResult(
@@ -137,6 +158,8 @@ def _try_open_position(
     ema_trend_v: float,
     atr_v: float,
     reverse: bool = False,
+    sl_fee_mult: float = SL_FEE_MULT,
+    tp_fee_mult: float = TP_FEE_MULT,
 ) -> dict | None:
     if atr_v <= 0:
         return None
@@ -162,8 +185,8 @@ def _try_open_position(
     # ihmal edilebilir düzeydedir).
     fee_per_side_usd = notional_usd * TAKER_FEE_RATE
     total_fee_usd = 2 * fee_per_side_usd  # giriş + çıkış
-    tp_price_distance = (TP_FEE_MULT * total_fee_usd) / quantity
-    sl_price_distance = (SL_FEE_MULT * total_fee_usd) / quantity
+    tp_price_distance = (tp_fee_mult * total_fee_usd) / quantity
+    sl_price_distance = (sl_fee_mult * total_fee_usd) / quantity
 
     if side == "LONG":
         stop_loss = entry_price - sl_price_distance

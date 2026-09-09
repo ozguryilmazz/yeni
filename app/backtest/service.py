@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from app.backtest.engine import EMA_TREND_PERIOD, BacktestResult, Candle, run_backtest
+from app.backtest.engine import EMA_TREND_PERIOD, NEUTRAL_FEE_MULT, BacktestResult, Candle, run_backtest
 from app.binance_client import get_futures_historical_klines
 
 INTERVAL = "5m"
@@ -15,6 +15,7 @@ WARMUP_CANDLES = EMA_TREND_PERIOD * 3
 class BacktestComparison:
     normal: BacktestResult
     reversed: BacktestResult
+    neutral: BacktestResult
 
 
 def _fetch_candles(symbol: str, start: datetime, end: datetime) -> tuple[list[Candle], int]:
@@ -47,10 +48,21 @@ def run_backtest_for_symbol(symbol: str, start: datetime, end: datetime, reverse
 
 
 def run_backtest_comparison(symbol: str, start: datetime, end: datetime) -> BacktestComparison:
-    """Aynı mum verisi üzerinde hem stratejinin normal yönünü hem de tam tersini
-    (LONG<->SHORT) tek seferde çalıştırır — ters sinyalle işlem açmanın gerçekte
-    ne verdiğini, veriyi iki kez çekmeden karşılaştırmak için kullanılır."""
+    """Aynı mum verisi üzerinde üç varyantı tek seferde çalıştırır:
+
+    - `normal`: stratejinin kendi sinyali (mevcut SL/TP komisyon çarpanlarıyla)
+    - `reversed`: sinyalin tersi (LONG<->SHORT), yine kendi SL/TP çarpanlarıyla
+    - `neutral`: normal yönde ama SL=TP (NEUTRAL_FEE_MULT) simetrik mesafeyle —
+      hangi tarafın (SL/TP) entry'ye daha yakın olduğu kazanma oranını
+      çarpıttığından, entry sinyalinin ham yön başarısını bu çarpıklıktan
+      arındırılmış şekilde görmek için kullanılır.
+
+    Veri tek seferde çekilip üçünde de tekrar kullanılır.
+    """
     candles, start_ms = _fetch_candles(symbol, start, end)
     normal = run_backtest(candles, start_time_ms=start_ms, reverse=False)
     reversed_result = run_backtest(candles, start_time_ms=start_ms, reverse=True)
-    return BacktestComparison(normal=normal, reversed=reversed_result)
+    neutral = run_backtest(
+        candles, start_time_ms=start_ms, reverse=False, sl_fee_mult=NEUTRAL_FEE_MULT, tp_fee_mult=NEUTRAL_FEE_MULT
+    )
+    return BacktestComparison(normal=normal, reversed=reversed_result, neutral=neutral)

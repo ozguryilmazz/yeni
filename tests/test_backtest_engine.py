@@ -2,7 +2,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.backtest.engine import Candle, run_backtest
+from app.backtest.engine import NEUTRAL_FEE_MULT, Candle, run_backtest
 
 # Sabit test parametreleri: margin=2$, kaldıraç=5x -> notional=10$, quantity=0.1.
 # fee_per_side = 10 * 0.0005 = 0.005 -> total_fee (giriş+çıkış) = 0.01.
@@ -12,15 +12,30 @@ TP_DISTANCE = 0.4
 SL_DISTANCE = 0.2
 
 
-def _run(candles, start_time_ms, ema_fast, ema_slow, ema_trend, atr_values, reverse=False):
+def _run(
+    candles,
+    start_time_ms,
+    ema_fast,
+    ema_slow,
+    ema_trend,
+    atr_values,
+    reverse=False,
+    sl_fee_mult=None,
+    tp_fee_mult=None,
+):
     """İndikatör hesaplamalarını (app.backtest.indicators.ema/atr) sahte, elle
     kurgulanmış dizilerle değiştirerek pozisyon/TP/SL/komisyon mantığını
     indikatör matematiğinden bağımsız, deterministik şekilde test eder."""
+    kwargs = {}
+    if sl_fee_mult is not None:
+        kwargs["sl_fee_mult"] = sl_fee_mult
+    if tp_fee_mult is not None:
+        kwargs["tp_fee_mult"] = tp_fee_mult
     with (
         patch("app.backtest.engine.ema", side_effect=[ema_fast, ema_slow, ema_trend]),
         patch("app.backtest.engine.atr", return_value=atr_values),
     ):
-        return run_backtest(candles, start_time_ms=start_time_ms, reverse=reverse)
+        return run_backtest(candles, start_time_ms=start_time_ms, reverse=reverse, **kwargs)
 
 
 def test_long_entry_and_take_profit_hit():
@@ -195,3 +210,20 @@ def test_sl_tp_distance_scales_with_taker_fee_not_atr():
     assert result_low_atr.trades[0].take_profit == pytest.approx(result_high_atr.trades[0].take_profit)
     assert result_low_atr.trades[0].stop_loss == pytest.approx(100 - SL_DISTANCE)
     assert result_low_atr.trades[0].take_profit == pytest.approx(100 + TP_DISTANCE)
+
+
+def test_neutral_fee_mult_produces_symmetric_sl_tp_distance():
+    """NEUTRAL_FEE_MULT (SL=TP) ile çağrıldığında, giriş her iki yönden de aynı
+    mesafede simetrik SL/TP üretmeli — 'nötr' karşılaştırmanın dayandığı temel."""
+    candles = [
+        Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
+        Candle(open_time_ms=300_000, open=100, high=100.1, low=99.9, close=100),
+    ]
+    result = _run(
+        candles, 0, [100, 100], [100, 100], [90, 90], [2, 2], sl_fee_mult=NEUTRAL_FEE_MULT, tp_fee_mult=NEUTRAL_FEE_MULT
+    )
+
+    trade = result.trades[0]
+    sl_distance = trade.entry_price - trade.stop_loss
+    tp_distance = trade.take_profit - trade.entry_price
+    assert sl_distance == pytest.approx(tp_distance)

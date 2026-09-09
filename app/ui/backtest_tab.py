@@ -77,11 +77,12 @@ class BacktestTab(QWidget):
             "pozisyon büyüklüğü) ile 100$ bakiye üzerinden simüle edilir; açılış ve kapanışta "
             "%0.05 taker komisyonu uygulanır. SL/TP, o işlemin toplam (giriş+çıkış) komisyon "
             "maliyetinin katları olarak hesaplanır: SL 2 katı, TP 4 katı uzaktadır. "
-            "Tarihler UTC (Binance sunucu saati) olarak yorumlanır. Aynı "
-            "veri üzerinde stratejinin TERSİ (LONG↔SHORT) de otomatik hesaplanıp aşağıda "
-            "karşılaştırma için gösterilir — SL/TP ters yönde entry'den yeniden hesaplanır, "
-            "orijinal işlemin seviyeleriyle basitçe yer değiştirmez. Bu sekme sadece geçmiş "
-            "veri üzerinde simülasyon yapar, gerçek işlem açmaz."
+            "Tarihler UTC (Binance sunucu saati) olarak yorumlanır. Aynı veri üzerinde iki "
+            "karşılaştırma daha otomatik hesaplanıp aşağıda gösterilir: TERSİ (LONG↔SHORT, "
+            "SL/TP ters yönde entry'den yeniden hesaplanır) ve NÖTR (SL=TP simetrik mesafe — "
+            "hangi tarafın entry'ye daha yakın olduğu kazanma oranını çarpıttığından, entry "
+            "sinyalinin ham yön başarısını bu çarpıklıktan arındırılmış görmek içindir). Bu "
+            "sekme sadece geçmiş veri üzerinde simülasyon yapar, gerçek işlem açmaz."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
@@ -100,6 +101,13 @@ class BacktestTab(QWidget):
         self.reversed_summary_label.setWordWrap(True)
         reversed_box.addWidget(self.reversed_summary_label)
         summaries.addLayout(reversed_box)
+
+        neutral_box = QVBoxLayout()
+        neutral_box.addWidget(QLabel("<b>Nötr (SL=TP, ham yön başarısı)</b>"))
+        self.neutral_summary_label = QLabel("—")
+        self.neutral_summary_label.setWordWrap(True)
+        neutral_box.addWidget(self.neutral_summary_label)
+        summaries.addLayout(neutral_box)
         layout.addLayout(summaries)
 
         table_header = QHBoxLayout()
@@ -107,6 +115,7 @@ class BacktestTab(QWidget):
         self.result_selector = QComboBox()
         self.result_selector.addItem("Normal Yön", "normal")
         self.result_selector.addItem("Ters Yön", "reversed")
+        self.result_selector.addItem("Nötr", "neutral")
         self.result_selector.currentIndexChanged.connect(self._on_result_selector_changed)
         table_header.addWidget(self.result_selector)
         table_header.addStretch()
@@ -150,6 +159,7 @@ class BacktestTab(QWidget):
         self.run_button.setEnabled(False)
         self.normal_summary_label.setText("Çalışıyor…")
         self.reversed_summary_label.setText("Çalışıyor…")
+        self.neutral_summary_label.setText("Çalışıyor…")
         self.trade_table.setRowCount(0)
 
         self._worker = RunBacktestWorker(symbol, start, end)
@@ -162,6 +172,7 @@ class BacktestTab(QWidget):
         self._comparison = comparison
         self._render_summary(self.normal_summary_label, comparison.normal)
         self._render_summary(self.reversed_summary_label, comparison.reversed)
+        self._render_summary(self.neutral_summary_label, comparison.neutral)
         self._render_selected_trades()
 
     def _on_error(self, message: str) -> None:
@@ -169,6 +180,7 @@ class BacktestTab(QWidget):
         self._comparison = None
         self.normal_summary_label.setText("—")
         self.reversed_summary_label.setText("—")
+        self.neutral_summary_label.setText("—")
         QMessageBox.warning(self, "Backtest çalıştırılamadı", message)
 
     def _on_result_selector_changed(self) -> None:
@@ -178,7 +190,11 @@ class BacktestTab(QWidget):
         if self._comparison is None:
             return
         key = self.result_selector.currentData()
-        result = self._comparison.reversed if key == "reversed" else self._comparison.normal
+        result = {
+            "normal": self._comparison.normal,
+            "reversed": self._comparison.reversed,
+            "neutral": self._comparison.neutral,
+        }[key]
         self._render_trades(result.trades)
 
     def _render_summary(self, label: QLabel, result: BacktestResult) -> None:
