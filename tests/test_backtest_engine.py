@@ -5,7 +5,7 @@ import pytest
 from app.backtest.engine import Candle, run_backtest
 
 
-def _run(candles, start_time_ms, ema_fast, ema_slow, ema_trend, atr_values):
+def _run(candles, start_time_ms, ema_fast, ema_slow, ema_trend, atr_values, reverse=False):
     """İndikatör hesaplamalarını (app.backtest.indicators.ema/atr) sahte, elle
     kurgulanmış dizilerle değiştirerek pozisyon/TP/SL/komisyon mantığını
     indikatör matematiğinden bağımsız, deterministik şekilde test eder."""
@@ -13,7 +13,7 @@ def _run(candles, start_time_ms, ema_fast, ema_slow, ema_trend, atr_values):
         patch("app.backtest.engine.ema", side_effect=[ema_fast, ema_slow, ema_trend]),
         patch("app.backtest.engine.atr", return_value=atr_values),
     ):
-        return run_backtest(candles, start_time_ms=start_time_ms)
+        return run_backtest(candles, start_time_ms=start_time_ms, reverse=reverse)
 
 
 def test_long_entry_and_take_profit_hit():
@@ -138,3 +138,33 @@ def test_no_signal_outside_entry_band_or_when_atr_is_zero():
     # ATR sıfır (band genişliği 0, işlem açılmamalı).
     result = _run(candles, 0, [100], [100], [90], [0])
     assert result.trades == []
+
+
+def test_reverse_flips_long_to_short():
+    candles = [
+        Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
+        Candle(open_time_ms=300_000, open=100, high=101, low=90, close=95),
+    ]
+    # Normalde EMA100=90 (close>trend) -> LONG üretir; reverse=True ile SHORT açılmalı.
+    result = _run(candles, 0, [100, 100], [100, 100], [90, 90], [2, 2], reverse=True)
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.side == "SHORT"
+    assert trade.stop_loss == pytest.approx(102)  # entry + 1*ATR
+    assert trade.take_profit == pytest.approx(96)  # entry - 2*ATR
+
+
+def test_reverse_flips_short_to_long():
+    candles = [
+        Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
+        Candle(open_time_ms=300_000, open=100, high=112, low=99, close=105),
+    ]
+    # Normalde EMA100=110 (close<trend) -> SHORT üretir; reverse=True ile LONG açılmalı.
+    result = _run(candles, 0, [100, 100], [100, 100], [110, 110], [2, 2], reverse=True)
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.side == "LONG"
+    assert trade.stop_loss == pytest.approx(98)  # entry - 1*ATR
+    assert trade.take_profit == pytest.approx(104)  # entry + 2*ATR

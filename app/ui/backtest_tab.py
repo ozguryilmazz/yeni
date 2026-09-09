@@ -1,8 +1,9 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from PySide6.QtCore import QDateTime
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
+    QComboBox,
     QDateTimeEdit,
     QHBoxLayout,
     QHeaderView,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.backtest.engine import BacktestResult, Trade
+from app.backtest.service import BacktestComparison
 from app.workers import RunBacktestWorker
 
 EXIT_REASON_LABELS = {"TP": "TP", "SL": "SL", "EOD": "Veri Sonu"}
@@ -29,11 +31,14 @@ def _format_ms(ms: int) -> str:
 class BacktestTab(QWidget):
     """'Backtest' sekmesi: seçilen coin ve tarih aralığında 5 dakikalık mumlar
     üzerinde 'Esnetilmiş 5D Scalp Stratejisi'ni (EMA9/21/100 + ATR14) simüle eder.
-    Gerçek işlem açmaz; sadece geçmiş veri üzerinde ne olurdu'yu gösterir."""
+    Aynı veri üzerinde stratejinin ürettiği sinyalin TERSİ de hesaplanıp yan yana
+    gösterilir. Gerçek işlem açmaz; sadece geçmiş veri üzerinde ne olurdu'yu
+    gösterir."""
 
     def __init__(self) -> None:
         super().__init__()
         self._worker: RunBacktestWorker | None = None
+        self._comparison: BacktestComparison | None = None
 
         layout = QVBoxLayout(self)
 
@@ -71,15 +76,40 @@ class BacktestTab(QWidget):
             "toleransla çekildiğinde giriş yapılır. SL girişten 1×ATR14, TP ise 2×ATR14 "
             "uzaktadır. Her işlem 2$ margin / 5x kaldıraç (10$ pozisyon büyüklüğü) ile 100$ "
             "bakiye üzerinden simüle edilir; açılış ve kapanışta %0.05 taker komisyonu net "
-            "kâr/zarardan düşülür. Tarihler UTC (Binance sunucu saati) olarak yorumlanır. "
-            "Bu sekme sadece geçmiş veri üzerinde simülasyon yapar, gerçek işlem açmaz."
+            "kâr/zarardan düşülür. Tarihler UTC (Binance sunucu saati) olarak yorumlanır. Aynı "
+            "veri üzerinde stratejinin TERSİ (LONG↔SHORT) de otomatik hesaplanıp aşağıda "
+            "karşılaştırma için gösterilir — SL/TP ters yönde entry'den yeniden hesaplanır, "
+            "orijinal işlemin seviyeleriyle basitçe yer değiştirmez. Bu sekme sadece geçmiş "
+            "veri üzerinde simülasyon yapar, gerçek işlem açmaz."
         )
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
-        self.summary_label = QLabel("—")
-        self.summary_label.setWordWrap(True)
-        layout.addWidget(self.summary_label)
+        summaries = QHBoxLayout()
+        normal_box = QVBoxLayout()
+        normal_box.addWidget(QLabel("<b>Normal Yön (strateji sinyali)</b>"))
+        self.normal_summary_label = QLabel("—")
+        self.normal_summary_label.setWordWrap(True)
+        normal_box.addWidget(self.normal_summary_label)
+        summaries.addLayout(normal_box)
+
+        reversed_box = QVBoxLayout()
+        reversed_box.addWidget(QLabel("<b>Ters Yön (sinyalin tersi)</b>"))
+        self.reversed_summary_label = QLabel("—")
+        self.reversed_summary_label.setWordWrap(True)
+        reversed_box.addWidget(self.reversed_summary_label)
+        summaries.addLayout(reversed_box)
+        layout.addLayout(summaries)
+
+        table_header = QHBoxLayout()
+        table_header.addWidget(QLabel("Gösterilen İşlem Listesi"))
+        self.result_selector = QComboBox()
+        self.result_selector.addItem("Normal Yön", "normal")
+        self.result_selector.addItem("Ters Yön", "reversed")
+        self.result_selector.currentIndexChanged.connect(self._on_result_selector_changed)
+        table_header.addWidget(self.result_selector)
+        table_header.addStretch()
+        layout.addLayout(table_header)
 
         self.trade_table = QTableWidget(0, 10)
         self.trade_table.setHorizontalHeaderLabels(
@@ -117,7 +147,8 @@ class BacktestTab(QWidget):
             return
 
         self.run_button.setEnabled(False)
-        self.summary_label.setText("Çalışıyor…")
+        self.normal_summary_label.setText("Çalışıyor…")
+        self.reversed_summary_label.setText("Çalışıyor…")
         self.trade_table.setRowCount(0)
 
         self._worker = RunBacktestWorker(symbol, start, end)
@@ -125,17 +156,31 @@ class BacktestTab(QWidget):
         self._worker.error.connect(self._on_error)
         self._worker.start()
 
-    def _on_finished(self, result: BacktestResult) -> None:
+    def _on_finished(self, comparison: BacktestComparison) -> None:
         self.run_button.setEnabled(True)
-        self._render_summary(result)
-        self._render_trades(result.trades)
+        self._comparison = comparison
+        self._render_summary(self.normal_summary_label, comparison.normal)
+        self._render_summary(self.reversed_summary_label, comparison.reversed)
+        self._render_selected_trades()
 
     def _on_error(self, message: str) -> None:
         self.run_button.setEnabled(True)
-        self.summary_label.setText("—")
+        self._comparison = None
+        self.normal_summary_label.setText("—")
+        self.reversed_summary_label.setText("—")
         QMessageBox.warning(self, "Backtest çalıştırılamadı", message)
 
-    def _render_summary(self, result: BacktestResult) -> None:
+    def _on_result_selector_changed(self) -> None:
+        self._render_selected_trades()
+
+    def _render_selected_trades(self) -> None:
+        if self._comparison is None:
+            return
+        key = self.result_selector.currentData()
+        result = self._comparison.reversed if key == "reversed" else self._comparison.normal
+        self._render_trades(result.trades)
+
+    def _render_summary(self, label: QLabel, result: BacktestResult) -> None:
         trades = result.trades
         total = len(trades)
         wins = [t for t in trades if t.net_pnl_usd > 0]
@@ -149,10 +194,10 @@ class BacktestTab(QWidget):
             f"<b>Toplam İşlem:</b> {total} &nbsp; "
             f"<b>Kazanan/Kaybeden:</b> {len(wins)}/{len(losses)} &nbsp; "
             f"<b>Kazanma Oranı:</b> {win_rate:.1f}%",
-            f"<b>Başlangıç Bakiyesi:</b> {result.starting_balance_usd:,.2f}$ &nbsp; "
-            f"<b>Bitiş Bakiyesi:</b> {result.ending_balance_usd:,.2f}$ &nbsp; "
+            f"<b>Başlangıç:</b> {result.starting_balance_usd:,.2f}$ &nbsp; "
+            f"<b>Bitiş:</b> {result.ending_balance_usd:,.2f}$ &nbsp; "
             f"<b>Net K/Z:</b> "
-            f"<span style='color:{pnl_color};'>{net_pnl:+,.2f}$</span> &nbsp; "
+            f"<span style='color:{pnl_color};'>{net_pnl:+,.2f}$</span>",
             f"<b>Toplam Komisyon:</b> {total_fees:,.2f}$",
         ]
         if result.stopped_early:
@@ -160,7 +205,7 @@ class BacktestTab(QWidget):
                 "<span style='color:#c62828;'>Bakiye 2$ margin'in altına düştüğü için "
                 "aralığın sonuna kadar yeni pozisyon açılamadı.</span>"
             )
-        self.summary_label.setText("<br>".join(lines))
+        label.setText("<br>".join(lines))
 
     def _render_trades(self, trades: list[Trade]) -> None:
         self.trade_table.setRowCount(len(trades))

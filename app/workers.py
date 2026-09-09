@@ -3,7 +3,7 @@ from datetime import datetime
 from PySide6.QtCore import QThread, Signal
 
 from app import repository
-from app.backtest.service import run_backtest_for_symbol
+from app.backtest.service import run_backtest_comparison
 from app.database import session_scope
 
 
@@ -73,7 +73,7 @@ class LoadMarketOverviewWorker(QThread):
 
 
 class RunBacktestWorker(QThread):
-    success = Signal(object)  # BacktestResult
+    success = Signal(object)  # BacktestComparison
     error = Signal(str)
 
     def __init__(self, symbol: str, start: datetime, end: datetime) -> None:
@@ -84,7 +84,7 @@ class RunBacktestWorker(QThread):
 
     def run(self) -> None:
         try:
-            result = run_backtest_for_symbol(self._symbol, self._start, self._end)
+            result = run_backtest_comparison(self._symbol, self._start, self._end)
         except Exception as exc:  # noqa: BLE001
             self.error.emit(str(exc))
             return

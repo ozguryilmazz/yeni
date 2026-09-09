@@ -51,7 +51,7 @@ class BacktestResult:
     stopped_early: bool
 
 
-def run_backtest(candles: list[Candle], start_time_ms: int) -> BacktestResult:
+def run_backtest(candles: list[Candle], start_time_ms: int, reverse: bool = False) -> BacktestResult:
     """Verilen mum dizisi üzerinde stratejiyi simüle eder.
 
     `candles`, indikatörlerin (özellikle EMA100) ısınması için `start_time_ms`'den
@@ -62,6 +62,12 @@ def run_backtest(candles: list[Candle], start_time_ms: int) -> BacktestResult:
     Aynı anda tek pozisyon açık tutulur; bir pozisyon TP/SL (veya veri sonunda
     zorunlu kapanış) ile kapanana kadar yeni sinyaller yok sayılır, kapanışın
     olduğu mumda da yeni pozisyon aranmaz.
+
+    `reverse=True` verilirse stratejinin ürettiği yön (LONG/SHORT) tersine
+    çevrilir; SL/TP yine aynı mantıkla (1×ATR / 2×ATR) ama yeni yöne göre
+    entry fiyatından yeniden hesaplanır — orijinal işlemin SL/TP'siyle basitçe
+    yer değiştirmez, çünkü sonraki mumlarda fiyatın nereye gideceği bağımsız
+    bir simülasyon gerektirir.
     """
     closes = [c.close for c in candles]
     highs = [c.high for c in candles]
@@ -110,7 +116,9 @@ def run_backtest(candles: list[Candle], start_time_ms: int) -> BacktestResult:
             if balance < MARGIN_USD:
                 stopped_early = True
                 continue
-            position = _try_open_position(candle, ema_fast[i], ema_slow[i], ema_trend[i], atr_values[i])
+            position = _try_open_position(
+                candle, ema_fast[i], ema_slow[i], ema_trend[i], atr_values[i], reverse=reverse
+            )
 
     return BacktestResult(
         trades=trades,
@@ -121,7 +129,12 @@ def run_backtest(candles: list[Candle], start_time_ms: int) -> BacktestResult:
 
 
 def _try_open_position(
-    candle: Candle, ema_fast_v: float, ema_slow_v: float, ema_trend_v: float, atr_v: float
+    candle: Candle,
+    ema_fast_v: float,
+    ema_slow_v: float,
+    ema_trend_v: float,
+    atr_v: float,
+    reverse: bool = False,
 ) -> dict | None:
     if atr_v <= 0:
         return None
@@ -132,9 +145,9 @@ def _try_open_position(
         return None
 
     if candle.close > ema_trend_v:
-        side = "LONG"
+        side = "SHORT" if reverse else "LONG"
     elif candle.close < ema_trend_v:
-        side = "SHORT"
+        side = "LONG" if reverse else "SHORT"
     else:
         return None
 
