@@ -2,14 +2,16 @@ from dataclasses import dataclass
 
 from app.backtest.indicators import atr, ema
 
-# "Esnetilmiş 5D Scalp Stratejisi" parametreleri
+# "Esnetilmiş 5D Scalp Stratejisi" parametreleri — yön/giriş EMA9/21/100 + ATR14
+# ile belirlenir; SL/TP ise ATR'den değil, o işlemin toplam komisyon maliyetinin
+# (giriş+çıkış) katlarından hesaplanır (bkz. _try_open_position).
 EMA_TREND_PERIOD = 100
 EMA_FAST_PERIOD = 9
 EMA_SLOW_PERIOD = 21
 ATR_PERIOD = 14
 ENTRY_BAND_ATR_MULT = 0.5
-SL_ATR_MULT = 1.0
-TP_ATR_MULT = 2.0
+SL_FEE_MULT = 4.0
+TP_FEE_MULT = 2.0
 
 MARGIN_USD = 2.0
 LEVERAGE = 5
@@ -64,10 +66,10 @@ def run_backtest(candles: list[Candle], start_time_ms: int, reverse: bool = Fals
     olduğu mumda da yeni pozisyon aranmaz.
 
     `reverse=True` verilirse stratejinin ürettiği yön (LONG/SHORT) tersine
-    çevrilir; SL/TP yine aynı mantıkla (1×ATR / 2×ATR) ama yeni yöne göre
-    entry fiyatından yeniden hesaplanır — orijinal işlemin SL/TP'siyle basitçe
-    yer değiştirmez, çünkü sonraki mumlarda fiyatın nereye gideceği bağımsız
-    bir simülasyon gerektirir.
+    çevrilir; SL/TP yine aynı mantıkla (komisyon maliyetinin katları) ama yeni
+    yöne göre entry fiyatından yeniden hesaplanır — orijinal işlemin
+    SL/TP'siyle basitçe yer değiştirmez, çünkü sonraki mumlarda fiyatın nereye
+    gideceği bağımsız bir simülasyon gerektirir.
     """
     closes = [c.close for c in candles]
     highs = [c.high for c in candles]
@@ -152,15 +154,23 @@ def _try_open_position(
         return None
 
     entry_price = candle.close
-    if side == "LONG":
-        stop_loss = entry_price - SL_ATR_MULT * atr_v
-        take_profit = entry_price + TP_ATR_MULT * atr_v
-    else:
-        stop_loss = entry_price + SL_ATR_MULT * atr_v
-        take_profit = entry_price - TP_ATR_MULT * atr_v
-
     notional_usd = MARGIN_USD * LEVERAGE
     quantity = notional_usd / entry_price
+
+    # Çıkış fiyatı henüz bilinmediğinden çıkış komisyonu da giriş notional'i
+    # üzerinden tahmin edilir (SL/TP mesafesi entry'ye yakın olduğundan sapma
+    # ihmal edilebilir düzeydedir).
+    fee_per_side_usd = notional_usd * TAKER_FEE_RATE
+    total_fee_usd = 2 * fee_per_side_usd  # giriş + çıkış
+    tp_price_distance = (TP_FEE_MULT * total_fee_usd) / quantity
+    sl_price_distance = (SL_FEE_MULT * total_fee_usd) / quantity
+
+    if side == "LONG":
+        stop_loss = entry_price - sl_price_distance
+        take_profit = entry_price + tp_price_distance
+    else:
+        stop_loss = entry_price + sl_price_distance
+        take_profit = entry_price - tp_price_distance
 
     return {
         "side": side,

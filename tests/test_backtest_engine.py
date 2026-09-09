@@ -4,6 +4,13 @@ import pytest
 
 from app.backtest.engine import Candle, run_backtest
 
+# Sabit test parametreleri: margin=2$, kaldıraç=5x -> notional=10$, quantity=0.1.
+# fee_per_side = 10 * 0.0005 = 0.005 -> total_fee (giriş+çıkış) = 0.01.
+# TP mesafesi (2x toplam komisyon) = 0.02 / 0.1 = 0.2 fiyat birimi.
+# SL mesafesi (4x toplam komisyon) = 0.04 / 0.1 = 0.4 fiyat birimi.
+TP_DISTANCE = 0.2
+SL_DISTANCE = 0.4
+
 
 def _run(candles, start_time_ms, ema_fast, ema_slow, ema_trend, atr_values, reverse=False):
     """İndikatör hesaplamalarını (app.backtest.indicators.ema/atr) sahte, elle
@@ -19,23 +26,25 @@ def _run(candles, start_time_ms, ema_fast, ema_slow, ema_trend, atr_values, reve
 def test_long_entry_and_take_profit_hit():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
-        Candle(open_time_ms=300_000, open=100, high=112, low=99, close=105),
+        Candle(open_time_ms=300_000, open=100, high=101, low=100, close=100.2),
     ]
-    # EMA9=EMA21=100 (bant: 99-101, close=100 içeride), EMA100=90 (close>trend -> LONG), ATR=2.
+    # EMA9=EMA21=100 (bant: 99-101, close=100 içeride), EMA100=90 (close>trend -> LONG).
+    # ATR yalnızca giriş bandını belirler; SL/TP artık komisyon maliyetinden hesaplanır.
     result = _run(candles, 0, [100, 100], [100, 100], [90, 90], [2, 2])
 
     assert len(result.trades) == 1
     trade = result.trades[0]
     assert trade.side == "LONG"
     assert trade.entry_price == pytest.approx(100)
-    assert trade.stop_loss == pytest.approx(98)
-    assert trade.take_profit == pytest.approx(104)
+    assert trade.stop_loss == pytest.approx(100 - SL_DISTANCE)
+    assert trade.take_profit == pytest.approx(100 + TP_DISTANCE)
     assert trade.quantity == pytest.approx(0.1)  # (2$ * 5x) / 100
     assert trade.exit_reason == "TP"
-    assert trade.exit_price == pytest.approx(104)
+    assert trade.exit_price == pytest.approx(100 + TP_DISTANCE)
 
-    gross_pnl = (104 - 100) * 0.1
-    fees = 100 * 0.1 * 0.0005 + 104 * 0.1 * 0.0005
+    exit_price = 100 + TP_DISTANCE
+    gross_pnl = (exit_price - 100) * 0.1
+    fees = 100 * 0.1 * 0.0005 + exit_price * 0.1 * 0.0005
     assert trade.gross_pnl_usd == pytest.approx(gross_pnl)
     assert trade.fees_usd == pytest.approx(fees)
     assert trade.net_pnl_usd == pytest.approx(gross_pnl - fees)
@@ -45,51 +54,51 @@ def test_long_entry_and_take_profit_hit():
 def test_short_entry_and_stop_loss_hit():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
-        Candle(open_time_ms=300_000, open=100, high=103, low=97, close=98),
+        Candle(open_time_ms=300_000, open=100, high=100.5, low=100, close=100.3),
     ]
-    # EMA100=110 (close<trend -> SHORT), ATR=2 -> SL=102, TP=96 (bu mumda sadece SL vurulur).
+    # EMA100=110 (close<trend -> SHORT) -> SL=entry+0.4, TP=entry-0.2 (bu mumda sadece SL vurulur).
     result = _run(candles, 0, [100, 100], [100, 100], [110, 110], [2, 2])
 
     assert len(result.trades) == 1
     trade = result.trades[0]
     assert trade.side == "SHORT"
-    assert trade.stop_loss == pytest.approx(102)
-    assert trade.take_profit == pytest.approx(96)
+    assert trade.stop_loss == pytest.approx(100 + SL_DISTANCE)
+    assert trade.take_profit == pytest.approx(100 - TP_DISTANCE)
     assert trade.exit_reason == "SL"
-    assert trade.exit_price == pytest.approx(102)
+    assert trade.exit_price == pytest.approx(100 + SL_DISTANCE)
     assert trade.net_pnl_usd < 0
 
 
 def test_same_candle_tp_and_sl_band_prefers_stop_loss():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
-        Candle(open_time_ms=300_000, open=100, high=110, low=90, close=100),  # her ikisi de menzilde
+        Candle(open_time_ms=300_000, open=100, high=100.5, low=99.5, close=100),  # her ikisi de menzilde
     ]
     result = _run(candles, 0, [100, 100], [100, 100], [90, 90], [2, 2])
 
     assert len(result.trades) == 1
     assert result.trades[0].exit_reason == "SL"
-    assert result.trades[0].exit_price == pytest.approx(98)
+    assert result.trades[0].exit_price == pytest.approx(100 - SL_DISTANCE)
 
 
 def test_forced_close_at_end_of_data_when_neither_tp_nor_sl_hit():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
-        Candle(open_time_ms=300_000, open=100, high=101, low=99, close=100.5),
+        Candle(open_time_ms=300_000, open=100, high=100.1, low=99.7, close=100.05),
     ]
     result = _run(candles, 0, [100, 100], [100, 100], [90, 90], [2, 2])
 
     assert len(result.trades) == 1
     trade = result.trades[0]
     assert trade.exit_reason == "EOD"
-    assert trade.exit_price == pytest.approx(100.5)
+    assert trade.exit_price == pytest.approx(100.05)
 
 
 def test_only_one_position_open_at_a_time():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),  # giriş
-        Candle(open_time_ms=300_000, open=100, high=101, low=99, close=100),  # açık pozisyon, TP/SL yok
-        Candle(open_time_ms=600_000, open=100, high=112, low=99, close=105),  # TP burada vurulur
+        Candle(open_time_ms=300_000, open=100, high=100.1, low=99.7, close=100),  # açık pozisyon, TP/SL yok
+        Candle(open_time_ms=600_000, open=100, high=101, low=100, close=100.5),  # TP burada vurulur
     ]
     # Her mumda sinyal koşulları teknik olarak sağlansa da (index1 dahil), pozisyon
     # açıkken yeni giriş aranmamalı -> toplam tek işlem olmalı.
@@ -143,7 +152,7 @@ def test_no_signal_outside_entry_band_or_when_atr_is_zero():
 def test_reverse_flips_long_to_short():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
-        Candle(open_time_ms=300_000, open=100, high=101, low=90, close=95),
+        Candle(open_time_ms=300_000, open=100, high=100.1, low=99.9, close=100),
     ]
     # Normalde EMA100=90 (close>trend) -> LONG üretir; reverse=True ile SHORT açılmalı.
     result = _run(candles, 0, [100, 100], [100, 100], [90, 90], [2, 2], reverse=True)
@@ -151,14 +160,14 @@ def test_reverse_flips_long_to_short():
     assert len(result.trades) == 1
     trade = result.trades[0]
     assert trade.side == "SHORT"
-    assert trade.stop_loss == pytest.approx(102)  # entry + 1*ATR
-    assert trade.take_profit == pytest.approx(96)  # entry - 2*ATR
+    assert trade.stop_loss == pytest.approx(100 + SL_DISTANCE)
+    assert trade.take_profit == pytest.approx(100 - TP_DISTANCE)
 
 
 def test_reverse_flips_short_to_long():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
-        Candle(open_time_ms=300_000, open=100, high=112, low=99, close=105),
+        Candle(open_time_ms=300_000, open=100, high=100.1, low=99.9, close=100),
     ]
     # Normalde EMA100=110 (close<trend) -> SHORT üretir; reverse=True ile LONG açılmalı.
     result = _run(candles, 0, [100, 100], [100, 100], [110, 110], [2, 2], reverse=True)
@@ -166,5 +175,23 @@ def test_reverse_flips_short_to_long():
     assert len(result.trades) == 1
     trade = result.trades[0]
     assert trade.side == "LONG"
-    assert trade.stop_loss == pytest.approx(98)  # entry - 1*ATR
-    assert trade.take_profit == pytest.approx(104)  # entry + 2*ATR
+    assert trade.stop_loss == pytest.approx(100 - SL_DISTANCE)
+    assert trade.take_profit == pytest.approx(100 + TP_DISTANCE)
+
+
+def test_sl_tp_distance_scales_with_taker_fee_not_atr():
+    """SL/TP artık ATR'den bağımsızdır: farklı ATR değerleriyle bile aynı entry
+    fiyatında aynı SL/TP mesafesi üretilmeli (yalnızca komisyona bağlı). ATR yalnızca
+    giriş bandının genişliğini etkiler."""
+    candles = [
+        Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
+        Candle(open_time_ms=300_000, open=100, high=100.1, low=99.9, close=100),
+    ]
+
+    result_low_atr = _run(candles, 0, [100, 100], [100, 100], [90, 90], [0.5, 0.5])
+    result_high_atr = _run(candles, 0, [100, 100], [100, 100], [90, 90], [50, 50])
+
+    assert result_low_atr.trades[0].stop_loss == pytest.approx(result_high_atr.trades[0].stop_loss)
+    assert result_low_atr.trades[0].take_profit == pytest.approx(result_high_atr.trades[0].take_profit)
+    assert result_low_atr.trades[0].stop_loss == pytest.approx(100 - SL_DISTANCE)
+    assert result_low_atr.trades[0].take_profit == pytest.approx(100 + TP_DISTANCE)
