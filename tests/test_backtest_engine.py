@@ -6,10 +6,10 @@ from app.backtest.engine import NEUTRAL_FEE_MULT, TREND_SLOPE_LOOKBACK, Candle, 
 
 # Sabit test parametreleri: margin=2$, kaldıraç=5x -> notional=10$, quantity=0.1.
 # fee_per_side = 10 * 0.0005 = 0.005 -> total_fee (giriş+çıkış) = 0.01.
-# TP mesafesi (4x toplam komisyon) = 0.04 / 0.1 = 0.4 fiyat birimi.
-# SL mesafesi (2x toplam komisyon) = 0.02 / 0.1 = 0.2 fiyat birimi.
-TP_DISTANCE = 0.4
-SL_DISTANCE = 0.2
+# TP mesafesi (20x toplam komisyon) = 0.2 / 0.1 = 2.0 fiyat birimi.
+# SL mesafesi (10x toplam komisyon) = 0.1 / 0.1 = 1.0 fiyat birimi.
+TP_DISTANCE = 2.0
+SL_DISTANCE = 1.0
 
 # Testlerde kullanılan ATR'lerin (en fazla 50) hepsinde min_slope = 0.5*ATR <= 25
 # kalır; 100 bu eşiği her durumda rahatça aşar (uptrend), -100 ise downtrend için.
@@ -68,7 +68,7 @@ def test_compute_trend_slope_none_when_either_end_missing():
 def test_long_entry_and_take_profit_hit():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
-        Candle(open_time_ms=300_000, open=100, high=101, low=100, close=100.2),
+        Candle(open_time_ms=300_000, open=100, high=103, low=100.5, close=102.5),
     ]
     # EMA9=EMA21=100 (bant: 99-101, close=100 içeride), EMA100=90 (close>trend -> LONG),
     # EMA100 güçlü şekilde yükseliyor (uptrend teyidi).
@@ -99,10 +99,10 @@ def test_long_entry_and_take_profit_hit():
 def test_short_entry_and_stop_loss_hit():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
-        Candle(open_time_ms=300_000, open=100, high=100.5, low=100, close=100.3),
+        Candle(open_time_ms=300_000, open=100, high=101.5, low=99.5, close=100.5),
     ]
     # EMA100=110 (close<trend -> SHORT), EMA100 güçlü şekilde düşüyor (downtrend teyidi)
-    # -> SL=entry+0.2, TP=entry-0.4 (bu mumda sadece SL vurulur).
+    # -> SL=entry+1.0, TP=entry-2.0 (bu mumda sadece SL vurulur).
     result = _run(
         candles, 0, [100, 100], [100, 100], [110, 110], [2, 2], [STRONG_DOWNTREND_SLOPE, STRONG_DOWNTREND_SLOPE]
     )
@@ -120,7 +120,7 @@ def test_short_entry_and_stop_loss_hit():
 def test_same_candle_tp_and_sl_band_prefers_stop_loss():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
-        Candle(open_time_ms=300_000, open=100, high=100.5, low=99.5, close=100),  # her ikisi de menzilde
+        Candle(open_time_ms=300_000, open=100, high=103, low=98, close=100),  # her ikisi de menzilde
     ]
     result = _run(
         candles, 0, [100, 100], [100, 100], [90, 90], [2, 2], [STRONG_UPTREND_SLOPE, STRONG_UPTREND_SLOPE]
@@ -134,7 +134,7 @@ def test_same_candle_tp_and_sl_band_prefers_stop_loss():
 def test_forced_close_at_end_of_data_when_neither_tp_nor_sl_hit():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
-        Candle(open_time_ms=300_000, open=100, high=100.1, low=99.85, close=100.05),
+        Candle(open_time_ms=300_000, open=100, high=101, low=99.5, close=100.5),
     ]
     result = _run(
         candles, 0, [100, 100], [100, 100], [90, 90], [2, 2], [STRONG_UPTREND_SLOPE, STRONG_UPTREND_SLOPE]
@@ -143,14 +143,14 @@ def test_forced_close_at_end_of_data_when_neither_tp_nor_sl_hit():
     assert len(result.trades) == 1
     trade = result.trades[0]
     assert trade.exit_reason == "EOD"
-    assert trade.exit_price == pytest.approx(100.05)
+    assert trade.exit_price == pytest.approx(100.5)
 
 
 def test_only_one_position_open_at_a_time():
     candles = [
         Candle(open_time_ms=0, open=100, high=100, low=100, close=100),  # giriş
-        Candle(open_time_ms=300_000, open=100, high=100.1, low=99.85, close=100),  # açık pozisyon, TP/SL yok
-        Candle(open_time_ms=600_000, open=100, high=101, low=100, close=100.5),  # TP burada vurulur
+        Candle(open_time_ms=300_000, open=100, high=101, low=99.5, close=100),  # açık pozisyon, TP/SL yok
+        Candle(open_time_ms=600_000, open=100, high=103, low=100, close=102.5),  # TP burada vurulur
     ]
     # Her mumda sinyal koşulları teknik olarak sağlansa da (index1 dahil), pozisyon
     # açıkken yeni giriş aranmamalı -> toplam tek işlem olmalı.

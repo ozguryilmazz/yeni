@@ -16,8 +16,14 @@ ENTRY_BAND_ATR_MULT = 0.5
 # hareket etmiş olmalı — aksi halde piyasa yatay (chop) kabul edilip işlem açılmaz.
 TREND_SLOPE_LOOKBACK = 20
 MIN_TREND_SLOPE_ATR_MULT = 0.5
-SL_FEE_MULT = 2.0
-TP_FEE_MULT = 4.0
+# SL/TP komisyon çarpanları: fiyat mesafesi = mult × 2 × TAKER_FEE_RATE × entry
+# (bkz. _try_open_position) — yani mult=10 ~%1.0, mult=20 ~%2.0 uzaklık demektir.
+# Düşük çarpanlarda (ör. 2/4) mesafe 15m/1h gibi büyük zaman dilimlerinin tipik
+# mum genişliğinin çok altında kalıp çıkışı "hangi eşik daha yakın" gürültüsüne
+# teslim ediyordu; 10/20 ile mesafe o gürültüden daha az etkilenecek büyüklüğe
+# çıkarılıyor (aynı 1:2 SL:TP oranı korunuyor).
+SL_FEE_MULT = 10.0
+TP_FEE_MULT = 20.0
 # SL=TP simetrik "nötr" test için: iki tarafı da aynı mesafeye koyup entry
 # sinyalinin (EMA9/21/100 + ATR bandı) ham yön başarısını, SL/TP mesafesinin
 # hangi tarafın daha sık vurulacağını etkilemesinden arındırarak ölçer.
