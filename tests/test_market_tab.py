@@ -132,8 +132,9 @@ def test_main_window_has_expected_tabs(qapp, db, user):
         qapp.processEvents()
 
     tabs = window.findChild(QTabWidget)
-    assert tabs.count() == 4
+    assert tabs.count() == 5
     assert tabs.tabText(0) == "Piyasa"
     assert tabs.tabText(1) == "Transferler"
     assert tabs.tabText(2) == "Tuzak Skoru"
     assert tabs.tabText(3) == "Backtest"
+    assert tabs.tabText(4) == "Canlı İşlem"

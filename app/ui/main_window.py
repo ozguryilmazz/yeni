@@ -4,6 +4,7 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QTabWidget, QVBoxLayout, QWidget
 
 from app.ui.backtest_tab import BacktestTab
+from app.ui.live_trading_tab import LiveTradingTab
 from app.ui.market_tab import MarketTab
 from app.ui.transfers_tab import TransfersTab
 from app.ui.whale_tracker_tab import WhaleTrapTab
@@ -27,12 +28,14 @@ class MainWindow(QMainWindow):
         self.transfers_tab = TransfersTab(user_id)
         self.whale_trap_tab = WhaleTrapTab()
         self.backtest_tab = BacktestTab()
+        self.live_trading_tab = LiveTradingTab(user_id)
 
         tabs = QTabWidget()
         tabs.addTab(self.market_tab, "Piyasa")
         tabs.addTab(self.transfers_tab, "Transferler")
         tabs.addTab(self.whale_trap_tab, "Tuzak Skoru")
         tabs.addTab(self.backtest_tab, "Backtest")
+        tabs.addTab(self.live_trading_tab, "Canlı İşlem")
         layout.addWidget(tabs)
 
     def _build_header(self) -> QHBoxLayout:
@@ -42,7 +45,9 @@ class MainWindow(QMainWindow):
         return header
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        # Tuzak Skoru sekmesi açık bir WebSocket/asyncio thread'i tutuyor olabilir;
-        # pencere kapanmadan önce bunun düzgün sonlanmasını sağla.
+        # Tuzak Skoru ve Canlı İşlem sekmeleri açık bir WebSocket/asyncio thread'i
+        # tutuyor olabilir; pencere kapanmadan önce bunların düzgün sonlanmasını sağla.
+        # Canlı İşlem'in durdurulması borsadaki açık SL/TP emirlerini İPTAL ETMEZ.
         self.whale_trap_tab.stop_tracking()
+        self.live_trading_tab.stop_tracking()
         super().closeEvent(event)
