@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from decimal import ROUND_DOWN, Decimal
 from urllib.parse import urlencode
 
 import httpx
@@ -32,8 +33,11 @@ def _raise_for_error(response: httpx.Response) -> None:
         raise BinanceAPIError(data.get("msg", "Binance API isteği başarısız oldu"), data.get("code"))
 
 
-def _signed_get(base_url: str, path: str, api_key: str, api_secret: str) -> dict:
-    params = _sign({"timestamp": int(time.time() * 1000), "recvWindow": 5000}, api_secret)
+def _signed_get(
+    base_url: str, path: str, api_key: str, api_secret: str, extra_params: dict | None = None
+) -> list | dict:
+    base_params = {"timestamp": int(time.time() * 1000), "recvWindow": 5000, **(extra_params or {})}
+    params = _sign(base_params, api_secret)
     headers = {"X-MBX-APIKEY": api_key}
 
     with httpx.Client(base_url=base_url, timeout=10) as client:
@@ -57,11 +61,31 @@ def _signed_post(
     return response.json()
 
 
+def _signed_delete(
+    base_url: str, path: str, api_key: str, api_secret: str, extra_params: dict | None = None
+) -> list | dict:
+    base_params = {"timestamp": int(time.time() * 1000), "recvWindow": 5000, **(extra_params or {})}
+    params = _sign(base_params, api_secret)
+    headers = {"X-MBX-APIKEY": api_key}
+
+    with httpx.Client(base_url=base_url, timeout=10) as client:
+        response = client.delete(path, params=params, headers=headers)
+
+    _raise_for_error(response)
+    return response.json()
+
+
 def get_api_restrictions(api_key: str, api_secret: str) -> dict:
     """GET /sapi/v1/account/apiRestrictions — API key'in gerçek izinlerini döner
     (enableReading, enableSpotAndMarginTrading, enableFutures, enableWithdrawals, ...).
     """
     return _signed_get(BINANCE_BASE_URL, "/sapi/v1/account/apiRestrictions", api_key, api_secret)
+
+
+def has_futures_trading_permission(api_restrictions: dict) -> bool:
+    """`get_api_restrictions()` sonucundan API key'in Futures işlem izni olup
+    olmadığını döner. Canlı işlem motoru başlamadan önce bu kontrol yapılabilir."""
+    return bool(api_restrictions.get("enableFutures"))
 
 
 def get_spot_account(api_key: str, api_secret: str) -> dict:
@@ -227,3 +251,152 @@ def get_futures_market_overview(period: str) -> list[dict]:
                 overview.append({"symbol": symbol, **stats})
 
     return overview
+
+
+# ---- Futures gerçek işlem (canlı) ------------------------------------------
+#
+# Bu fonksiyonlar Binance Futures MAINNET'ine (BINANCE_FUTURES_BASE_URL) gerçek
+# para ile emir gönderir. Hiçbiri kendiliğinden çağrılmaz — yalnızca kullanıcının
+# açıkça başlattığı canlı işlem motoru (app.live_trading) tarafından kullanılır.
+
+
+def get_futures_symbol_info(symbol: str) -> dict:
+    """GET /fapi/v1/exchangeInfo — verilen sembolün emir filtrelerini (LOT_SIZE,
+    PRICE_FILTER, MIN_NOTIONAL vb.) döner. Emir miktarı/fiyatını borsanın kabul
+    ettiği hassasiyete yuvarlamak için kullanılır (bkz. round_quantity_to_lot_size,
+    round_price_to_tick_size) — yanlış hassasiyetle gönderilen emirler Binance
+    tarafından reddedilir."""
+    data = _public_get("/fapi/v1/exchangeInfo")
+    for s in data.get("symbols", []):
+        if s["symbol"] == symbol:
+            return s
+    raise ValueError(f"Sembol bulunamadı: {symbol}")
+
+
+def _round_step(value: float, step_size: str) -> float:
+    """Binance'in stepSize/tickSize'ına (ondalık string, ör. '0.001') göre
+    değeri AŞAĞI yuvarlar — yukarı yuvarlama borsanın izin verdiği miktarı/
+    fiyatı aşıp emri reddettirebilir. `Decimal` kullanılır ki ondalık
+    basamaklarda ikili (float) yuvarlama hatası oluşmasın."""
+    step_decimal = Decimal(step_size)
+    value_decimal = Decimal(str(value))
+    steps = (value_decimal / step_decimal).to_integral_value(rounding=ROUND_DOWN)
+    return float(steps * step_decimal)
+
+
+def round_quantity_to_lot_size(symbol_info: dict, quantity: float) -> float:
+    lot_size_filter = next(f for f in symbol_info["filters"] if f["filterType"] == "LOT_SIZE")
+    return _round_step(quantity, lot_size_filter["stepSize"])
+
+
+def round_price_to_tick_size(symbol_info: dict, price: float) -> float:
+    price_filter = next(f for f in symbol_info["filters"] if f["filterType"] == "PRICE_FILTER")
+    return _round_step(price, price_filter["tickSize"])
+
+
+def set_futures_leverage(api_key: str, api_secret: str, symbol: str, leverage: int) -> dict:
+    """POST /fapi/v1/leverage — sembolün kaldıracını ayarlar (1 ile sembole göre
+    değişen bir üst sınır arasında)."""
+    return _signed_post(
+        BINANCE_FUTURES_BASE_URL,
+        "/fapi/v1/leverage",
+        api_key,
+        api_secret,
+        {"symbol": symbol, "leverage": leverage},
+    )
+
+
+def set_futures_margin_type(api_key: str, api_secret: str, symbol: str, margin_type: str = "ISOLATED") -> dict:
+    """POST /fapi/v1/marginType — margin modunu (ISOLATED/CROSSED) ayarlar.
+    Sembol zaten o moddaysa Binance -4046 hata kodunu döner; bu bir hata değil
+    "zaten istenen durumda" anlamına geldiğinden burada yutulup normal bir
+    sonuç gibi ele alınır."""
+    try:
+        return _signed_post(
+            BINANCE_FUTURES_BASE_URL,
+            "/fapi/v1/marginType",
+            api_key,
+            api_secret,
+            {"symbol": symbol, "marginType": margin_type},
+        )
+    except BinanceAPIError as exc:
+        if exc.code == -4046:
+            return {"msg": "no need to change margin type"}
+        raise
+
+
+def place_futures_market_order(
+    api_key: str, api_secret: str, symbol: str, side: str, quantity: float, reduce_only: bool = False
+) -> dict:
+    """POST /fapi/v1/order — MARKET emriyle pozisyon açar/kapatır (tek yönlü
+    pozisyon modu varsayılır). `side`: 'BUY' (LONG aç / SHORT kapat) veya
+    'SELL' (SHORT aç / LONG kapat). `quantity`, çağıran tarafından zaten
+    round_quantity_to_lot_size ile yuvarlanmış olmalı."""
+    params = {"symbol": symbol, "side": side, "type": "MARKET", "quantity": quantity}
+    if reduce_only:
+        params["reduceOnly"] = "true"
+    return _signed_post(BINANCE_FUTURES_BASE_URL, "/fapi/v1/order", api_key, api_secret, params)
+
+
+def place_futures_stop_loss_order(api_key: str, api_secret: str, symbol: str, side: str, stop_price: float) -> dict:
+    """POST /fapi/v1/order — STOP_MARKET, closePosition=true: fiyat stop_price'a
+    değince o semboldeki TÜM açık pozisyonu piyasa fiyatından kapatır (miktar
+    belirtilmez, borsa pozisyonun tamamını kapatır). `side`, kapanış yönüdür:
+    LONG pozisyon için 'SELL', SHORT pozisyon için 'BUY'. `stop_price`,
+    çağıran tarafından round_price_to_tick_size ile yuvarlanmış olmalı."""
+    params = {
+        "symbol": symbol,
+        "side": side,
+        "type": "STOP_MARKET",
+        "stopPrice": stop_price,
+        "closePosition": "true",
+    }
+    return _signed_post(BINANCE_FUTURES_BASE_URL, "/fapi/v1/order", api_key, api_secret, params)
+
+
+def place_futures_take_profit_order(
+    api_key: str, api_secret: str, symbol: str, side: str, stop_price: float
+) -> dict:
+    """POST /fapi/v1/order — TAKE_PROFIT_MARKET, closePosition=true (bkz.
+    place_futures_stop_loss_order — aynı mantık, ters yönde tetiklenir)."""
+    params = {
+        "symbol": symbol,
+        "side": side,
+        "type": "TAKE_PROFIT_MARKET",
+        "stopPrice": stop_price,
+        "closePosition": "true",
+    }
+    return _signed_post(BINANCE_FUTURES_BASE_URL, "/fapi/v1/order", api_key, api_secret, params)
+
+
+def cancel_futures_order(api_key: str, api_secret: str, symbol: str, order_id: int) -> dict:
+    """DELETE /fapi/v1/order — açık bir emri iptal eder (ör. TP vurulup
+    pozisyon kapandığında borsada asılı kalan SL emrini temizlemek için)."""
+    return _signed_delete(
+        BINANCE_FUTURES_BASE_URL,
+        "/fapi/v1/order",
+        api_key,
+        api_secret,
+        {"symbol": symbol, "orderId": order_id},
+    )
+
+
+def cancel_all_futures_open_orders(api_key: str, api_secret: str, symbol: str) -> dict:
+    """DELETE /fapi/v1/allOpenOrders — sembolün tüm açık emirlerini (SL/TP
+    dahil) tek seferde iptal eder."""
+    return _signed_delete(BINANCE_FUTURES_BASE_URL, "/fapi/v1/allOpenOrders", api_key, api_secret, {"symbol": symbol})
+
+
+def get_futures_open_orders(api_key: str, api_secret: str, symbol: str) -> list[dict]:
+    """GET /fapi/v1/openOrders — sembolün açık (henüz gerçekleşmemiş/tetiklenmemiş)
+    emirlerini döner."""
+    result = _signed_get(BINANCE_FUTURES_BASE_URL, "/fapi/v1/openOrders", api_key, api_secret, {"symbol": symbol})
+    return result if isinstance(result, list) else []
+
+
+def get_futures_position_risk(api_key: str, api_secret: str, symbol: str) -> list[dict]:
+    """GET /fapi/v2/positionRisk — sembolün açık pozisyon(lar)ını (miktar, giriş
+    fiyatı, anlık kâr/zarar, kaldıraç, likidasyon fiyatı) döner. Tek yönlü
+    pozisyon modunda tek bir kayıt döner; positionAmt=0 ise açık pozisyon yoktur."""
+    result = _signed_get(BINANCE_FUTURES_BASE_URL, "/fapi/v2/positionRisk", api_key, api_secret, {"symbol": symbol})
+    return result if isinstance(result, list) else []
