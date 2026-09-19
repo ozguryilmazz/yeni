@@ -4,6 +4,7 @@ from PySide6.QtGui import QGuiApplication
 
 from app.backtest.engine import BacktestResult, Trade
 from app.backtest.service import BacktestComparison
+from app.strategies.registry import DEFAULT_STRATEGY_NAME
 from app.ui.backtest_tab import BacktestTab
 
 
@@ -132,6 +133,24 @@ def test_run_passes_selected_interval_to_backtest_comparison(qapp):
         qapp.processEvents()
 
     assert mock_comparison.call_args.kwargs["interval"] == "1h"
+
+
+def test_strategy_combo_defaults_to_the_registered_default_strategy(qapp):
+    tab = BacktestTab()
+
+    assert tab.strategy_combo.currentData() == DEFAULT_STRATEGY_NAME
+    assert tab.strategy_combo.count() >= 1
+
+
+def test_run_passes_selected_strategy_to_backtest_comparison(qapp):
+    with patch("app.workers.run_backtest_comparison") as mock_comparison:
+        tab = BacktestTab()
+
+        tab._handle_run()
+        tab._worker.wait()
+        qapp.processEvents()
+
+    assert mock_comparison.call_args.kwargs["strategy_name"] == DEFAULT_STRATEGY_NAME
 
 
 def test_run_error_shows_warning_and_reenables_button(qapp):

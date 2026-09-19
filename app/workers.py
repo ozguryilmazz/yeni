@@ -76,16 +76,19 @@ class RunBacktestWorker(QThread):
     success = Signal(object)  # BacktestComparison
     error = Signal(str)
 
-    def __init__(self, symbol: str, start: datetime, end: datetime, interval: str) -> None:
+    def __init__(self, symbol: str, start: datetime, end: datetime, interval: str, strategy_name: str) -> None:
         super().__init__()
         self._symbol = symbol
         self._start = start
         self._end = end
         self._interval = interval
+        self._strategy_name = strategy_name
 
     def run(self) -> None:
         try:
-            result = run_backtest_comparison(self._symbol, self._start, self._end, interval=self._interval)
+            result = run_backtest_comparison(
+                self._symbol, self._start, self._end, interval=self._interval, strategy_name=self._strategy_name
+            )
         except Exception as exc:  # noqa: BLE001
             self.error.emit(str(exc))
             return

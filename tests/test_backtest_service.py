@@ -5,12 +5,14 @@ import pytest
 
 from app.backtest.engine import BacktestResult
 from app.backtest.service import (
-    WARMUP_CANDLES,
     BacktestComparison,
     run_backtest_comparison,
     run_backtest_for_symbol,
 )
 from app.binance_client import INTERVAL_MS_MAP
+from app.strategies.registry import DEFAULT_STRATEGY_NAME, get_strategy
+
+WARMUP_CANDLES = get_strategy(DEFAULT_STRATEGY_NAME).warmup_candles
 
 
 def _flat_klines(open_time_ms: int, count: int, interval_ms: int, price: str = "100") -> list[list]:
@@ -110,3 +112,10 @@ def test_comparison_raises_when_start_is_not_before_end():
     same = datetime(2024, 1, 1, tzinfo=timezone.utc)
     with pytest.raises(ValueError):
         run_backtest_comparison("BTCUSDT", same, same)
+
+
+def test_raises_for_unknown_strategy_name():
+    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    with pytest.raises(ValueError):
+        run_backtest_for_symbol("BTCUSDT", start, end, strategy_name="olmayan strateji")

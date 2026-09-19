@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from app.backtest.engine import BacktestResult, Trade
 from app.backtest.service import DEFAULT_INTERVAL, BacktestComparison
+from app.strategies.registry import DEFAULT_STRATEGY_NAME, STRATEGIES
 from app.workers import RunBacktestWorker
 
 EXIT_REASON_LABELS = {"TP": "TP", "SL": "SL", "EOD": "Veri Sonu"}
@@ -42,6 +43,15 @@ class BacktestTab(QWidget):
         self._comparison: BacktestComparison | None = None
 
         layout = QVBoxLayout(self)
+
+        strategy_row = QHBoxLayout()
+        strategy_row.addWidget(QLabel("Strateji"))
+        self.strategy_combo = QComboBox()
+        for name in STRATEGIES:
+            self.strategy_combo.addItem(name, name)
+        self.strategy_combo.setCurrentIndex(self.strategy_combo.findData(DEFAULT_STRATEGY_NAME))
+        strategy_row.addWidget(self.strategy_combo, stretch=1)
+        layout.addLayout(strategy_row)
 
         controls = QHBoxLayout()
         controls.addWidget(QLabel("Sembol"))
@@ -79,10 +89,11 @@ class BacktestTab(QWidget):
         layout.addLayout(controls)
 
         hint = QLabel(
-            "Seçilen zaman diliminde 'Esnetilmiş 5D Scalp' stratejisi: Fiyat EMA100 üzerindeyse "
-            "LONG, altındaysa SHORT yönü aranır — ama EMA100'ün kendisi de son 20 mumda en az "
-            "0.5×ATR kadar aynı yönde eğimli olmalı (yatay/chop piyasada işlem açılmaz). Fiyat "
-            "EMA9/EMA21 bölgesine ATR14'ün ±0.5 katı toleransla çekildiğinde giriş yapılır. Her "
+            "Yukarıdan bir strateji seçip seçilen zaman diliminde çalıştırırsın. Varsayılan "
+            "'Esnetilmiş 5D Scalp': Fiyat EMA100 üzerindeyse LONG, altındaysa SHORT yönü aranır "
+            "— ama EMA100'ün kendisi de son 20 mumda en az 0.5×ATR kadar aynı yönde eğimli olmalı "
+            "(yatay/chop piyasada işlem açılmaz). Fiyat EMA9/EMA21 bölgesine ATR14'ün ±0.5 katı "
+            "toleransla çekildiğinde giriş yapılır. Her "
             "işlem 2$ margin / 5x kaldıraç (10$ pozisyon büyüklüğü) ile 100$ bakiye üzerinden "
             "simüle edilir; açılış ve kapanışta %0.05 taker komisyonu uygulanır. SL/TP, o "
             "işlemin toplam (giriş+çıkış) komisyon maliyetinin katları olarak hesaplanır: SL 10 "
@@ -174,7 +185,8 @@ class BacktestTab(QWidget):
         self.trade_table.setRowCount(0)
 
         interval = self.interval_combo.currentData()
-        self._worker = RunBacktestWorker(symbol, start, end, interval)
+        strategy_name = self.strategy_combo.currentData()
+        self._worker = RunBacktestWorker(symbol, start, end, interval, strategy_name)
         self._worker.success.connect(self._on_finished)
         self._worker.error.connect(self._on_error)
         self._worker.start()
