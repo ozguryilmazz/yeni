@@ -38,6 +38,48 @@ class ApiCredential(Base):
     )
 
 
+class LiveTrade(Base):
+    """Futures'ta GERÇEK PARA ile açılan/kapanan işlemlerin denetim kaydı
+    (bkz. app.live_trading). SL/TP borsa tarafında gerçek emirler olarak
+    açılır; bu tablo sadece geçmiş/denetim amaçlıdır, pozisyonu yönetmez."""
+
+    __tablename__ = "live_trades"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    credential_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("api_credentials.id", ondelete="SET NULL"), nullable=True
+    )
+    strategy_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    symbol: Mapped[str] = mapped_column(String(20), nullable=False)
+    interval: Mapped[str] = mapped_column(String(10), nullable=False)
+    mode: Mapped[str] = mapped_column(String(10), nullable=False)  # "auto" | "confirm"
+    side: Mapped[str] = mapped_column(String(5), nullable=False)  # LONG | SHORT
+    margin_usd: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    leverage: Mapped[int] = mapped_column(nullable=False)
+    sl_fee_mult: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    tp_fee_mult: Mapped[Decimal] = mapped_column(Numeric(18, 8), nullable=False)
+    entry_price: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    stop_loss_price: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    take_profit_price: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    entry_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sl_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tp_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="OPEN")
+    # "OPEN" | "CLOSED_TP" | "CLOSED_SL" | "CLOSED_UNKNOWN" | "FAILED"
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), server_default=func.now()
+    )
+
+
 class Transfer(Base):
     __tablename__ = "transfers"
 
