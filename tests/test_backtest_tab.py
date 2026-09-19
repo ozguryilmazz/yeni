@@ -115,11 +115,11 @@ def test_successful_run_renders_both_summaries_and_defaults_to_normal_trade_tabl
     assert tab.trade_table.rowCount() == 3
 
 
-def test_interval_combo_defaults_to_5m_with_three_options(qapp):
+def test_interval_combo_defaults_to_5m_with_expected_options(qapp):
     tab = BacktestTab()
 
     assert tab.interval_combo.currentData() == "5m"
-    assert {tab.interval_combo.itemData(i) for i in range(tab.interval_combo.count())} == {"5m", "15m", "1h"}
+    assert {tab.interval_combo.itemData(i) for i in range(tab.interval_combo.count())} == {"1m", "5m", "15m", "1h"}
 
 
 def test_run_passes_selected_interval_to_backtest_comparison(qapp):

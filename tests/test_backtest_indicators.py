@@ -1,6 +1,6 @@
 import pytest
 
-from app.backtest.indicators import atr, ema
+from app.backtest.indicators import atr, ema, rsi
 
 
 def test_ema_seeds_with_sma_then_smooths():
@@ -61,3 +61,32 @@ def test_atr_reacts_to_a_volatility_spike():
 def test_atr_rejects_mismatched_lengths():
     with pytest.raises(ValueError):
         atr([1.0, 2.0], [1.0], [1.0, 2.0])
+
+
+def test_rsi_hand_calculated_example():
+    # değişimler: +2, -1, +2 -> avg_gain=(2+0+2)/3=4/3, avg_loss=(0+1+0)/3=1/3
+    # RS=4 -> RSI=100-100/(1+4)=80
+    closes = [10.0, 12.0, 11.0, 13.0]
+
+    result = rsi(closes, period=3)
+
+    assert result[:3] == [None, None, None]
+    assert result[3] == pytest.approx(80.0)
+
+
+def test_rsi_monotonic_uptrend_is_100():
+    closes = [float(i) for i in range(1, 20)]  # hep kazanç, hiç kayıp yok
+    result = rsi(closes, period=14)
+
+    assert all(v == pytest.approx(100.0) for v in result[14:])
+
+
+def test_rsi_monotonic_downtrend_is_0():
+    closes = [float(i) for i in range(20, 1, -1)]  # hep kayıp, hiç kazanç yok
+    result = rsi(closes, period=14)
+
+    assert all(v == pytest.approx(0.0) for v in result[14:])
+
+
+def test_rsi_returns_all_none_when_not_enough_data():
+    assert rsi([1.0, 2.0, 3.0], period=14) == [None, None, None]

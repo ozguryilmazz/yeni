@@ -7,7 +7,7 @@ from app.position_sizing import NEUTRAL_FEE_MULT
 from app.strategies.registry import DEFAULT_STRATEGY_NAME, get_strategy
 
 DEFAULT_INTERVAL = "5m"
-SUPPORTED_INTERVALS = ["5m", "15m", "1h"]
+SUPPORTED_INTERVALS = ["1m", "5m", "15m", "1h"]
 
 
 @dataclass
@@ -38,6 +38,7 @@ def _fetch_candles(
             high=float(k[2]),
             low=float(k[3]),
             close=float(k[4]),
+            volume=float(k[5]),
         )
         for k in raw_klines
     ]
@@ -54,7 +55,14 @@ def run_backtest_for_symbol(
 ) -> BacktestResult:
     strategy = get_strategy(strategy_name)
     candles, start_ms = _fetch_candles(symbol, start, end, interval, strategy.warmup_candles)
-    return run_backtest(candles, start_time_ms=start_ms, compute_signals=strategy.compute_signals, reverse=reverse)
+    return run_backtest(
+        candles,
+        start_time_ms=start_ms,
+        compute_signals=strategy.compute_signals,
+        reverse=reverse,
+        entry_timing=strategy.entry_timing,
+        max_holding_bars=strategy.max_holding_bars,
+    )
 
 
 def run_backtest_comparison(
@@ -77,16 +85,19 @@ def run_backtest_comparison(
     """
     strategy = get_strategy(strategy_name)
     candles, start_ms = _fetch_candles(symbol, start, end, interval, strategy.warmup_candles)
-    normal = run_backtest(candles, start_time_ms=start_ms, compute_signals=strategy.compute_signals, reverse=False)
-    reversed_result = run_backtest(
-        candles, start_time_ms=start_ms, compute_signals=strategy.compute_signals, reverse=True
-    )
+    common_kwargs = {
+        "compute_signals": strategy.compute_signals,
+        "entry_timing": strategy.entry_timing,
+        "max_holding_bars": strategy.max_holding_bars,
+    }
+    normal = run_backtest(candles, start_time_ms=start_ms, reverse=False, **common_kwargs)
+    reversed_result = run_backtest(candles, start_time_ms=start_ms, reverse=True, **common_kwargs)
     neutral = run_backtest(
         candles,
         start_time_ms=start_ms,
-        compute_signals=strategy.compute_signals,
         reverse=False,
         sl_fee_mult=NEUTRAL_FEE_MULT,
         tp_fee_mult=NEUTRAL_FEE_MULT,
+        **common_kwargs,
     )
     return BacktestComparison(normal=normal, reversed=reversed_result, neutral=neutral)

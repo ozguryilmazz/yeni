@@ -22,8 +22,8 @@ from app.backtest.service import DEFAULT_INTERVAL, BacktestComparison
 from app.strategies.registry import DEFAULT_STRATEGY_NAME, STRATEGIES
 from app.workers import RunBacktestWorker
 
-EXIT_REASON_LABELS = {"TP": "TP", "SL": "SL", "EOD": "Veri Sonu"}
-INTERVAL_LABELS = {"5m": "5 Dakika", "15m": "15 Dakika", "1h": "1 Saat"}
+EXIT_REASON_LABELS = {"TP": "TP", "SL": "SL", "TIME": "Zaman Aşımı", "EOD": "Veri Sonu"}
+INTERVAL_LABELS = {"1m": "1 Dakika", "5m": "5 Dakika", "15m": "15 Dakika", "1h": "1 Saat"}
 
 
 def _format_ms(ms: int) -> str:

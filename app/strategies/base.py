@@ -20,3 +20,13 @@ class Strategy:
     """Bu stratejinin indikatörlerinin (ör. EMA100) ısınması için, işlem
     aralığından önce kaç ekstra mum çekilmesi gerektiği (bkz.
     app.backtest.service)."""
+    entry_timing: str = "same_close"
+    """'same_close': sinyal mumunun kendi kapanışında girilir (varsayılan).
+    'next_open': sinyalden SONRAKİ mumun açılışında girilir — canlıda bu,
+    sinyal algılanır algılanmaz anında emir gönderilmesiyle otomatik
+    sağlanır (bkz. app.live_trading.engine); backtest'te ise engine.py
+    bir sonraki mumu bekler (bkz. app.backtest.engine.run_backtest)."""
+    max_holding_bars: int | None = None
+    """Verilirse, pozisyon SL/TP'ye değmeden bu kadar mum açık kalırsa
+    zorla kapatılır (bkz. app.backtest.engine.run_backtest ve
+    app.live_trading.engine)."""

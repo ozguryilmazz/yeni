@@ -20,6 +20,9 @@ class Candle:
     high: float
     low: float
     close: float
+    volume: float = 0.0
+    """Hacim tabanlı sinyaller (ör. likidite avı stratejisi) için; hacim
+    kullanmayan stratejiler bu alanı yok sayabilir."""
 
 
 @dataclass
@@ -31,7 +34,7 @@ class Trade:
     take_profit: float
     exit_time_ms: int
     exit_price: float
-    exit_reason: str  # "TP" | "SL" | "EOD"
+    exit_reason: str  # "TP" | "SL" | "TIME" | "EOD"
     quantity: float
     gross_pnl_usd: float
     fees_usd: float
@@ -56,6 +59,8 @@ def run_backtest(
     tp_fee_mult: float = TP_FEE_MULT,
     margin_usd: float = MARGIN_USD,
     leverage: float = LEVERAGE,
+    entry_timing: str = "same_close",
+    max_holding_bars: int | None = None,
 ) -> BacktestResult:
     """Verilen mum dizisi üzerinde, `compute_signals` fonksiyonunun ürettiği
     yön sinyallerine göre pozisyon/TP/SL/komisyon simülasyonu yapar.
@@ -84,6 +89,16 @@ def run_backtest(
     `NEUTRAL_FEE_MULT` ile ikisini eşitleyip "nötr" bir test çalıştırmak,
     veya canlı işlem motorunun kullanıcının girdiği risk parametreleriyle
     aynı hesaplamayı yapması için.
+
+    `entry_timing`: "same_close" (varsayılan) sinyalin oluştuğu mumun kendi
+    kapanışında girer (ör. Esnetilmiş 5D Scalp). "next_open" ise sinyal
+    mumundan SONRAKİ mumun açılışında girer (ör. likidite avı stratejisi —
+    sweep+red mumunun kapanışı doğrulandıktan sonra, gerçekçi bir gecikmeyle
+    giriş yapılır). Sinyal, artık dizinin son mumundaysa (bir sonraki mum
+    henüz yoksa) o sinyal bu çalıştırmada değerlendirilemez.
+
+    `max_holding_bars`: verilirse, pozisyon SL/TP'ye değmeden bu kadar mum
+    boyunca açık kalırsa mumun kapanışında zorla kapatılır (exit_reason="TIME").
     """
     signals = compute_signals(candles)
 
@@ -100,6 +115,8 @@ def run_backtest(
             hit_sl = candle.low <= sl if side == "LONG" else candle.high >= sl
             hit_tp = candle.high >= tp if side == "LONG" else candle.low <= tp
             is_last_candle = i == len(candles) - 1
+            bars_held = i - position["entry_index"]
+            time_exceeded = max_holding_bars is not None and bars_held >= max_holding_bars
 
             exit_price: float | None = None
             exit_reason: str | None = None
@@ -109,6 +126,8 @@ def run_backtest(
                 exit_price, exit_reason = sl, "SL"
             elif hit_tp:
                 exit_price, exit_reason = tp, "TP"
+            elif time_exceeded:
+                exit_price, exit_reason = candle.close, "TIME"
             elif is_last_candle:
                 exit_price, exit_reason = candle.close, "EOD"
 
@@ -123,6 +142,20 @@ def run_backtest(
             signal = signals[i]
             if signal is None:
                 continue
+
+            if entry_timing == "next_open":
+                if i + 1 >= len(candles):
+                    continue  # sıradaki mum henüz yok, bu sinyal şimdilik değerlendirilemez
+                entry_candle = candles[i + 1]
+                entry_price = entry_candle.open
+                entry_time_ms = entry_candle.open_time_ms
+                entry_index = i + 1
+            else:
+                entry_candle = candle
+                entry_price = candle.close
+                entry_time_ms = candle.open_time_ms
+                entry_index = i
+
             if balance < margin_usd:
                 stopped_early = True
                 continue
@@ -130,17 +163,17 @@ def run_backtest(
             side = signal
             if reverse:
                 side = "SHORT" if signal == "LONG" else "LONG"
-            entry_price = candle.close
             stop_loss, take_profit, quantity = compute_position_sizing(
                 entry_price, side, margin_usd, leverage, sl_fee_mult, tp_fee_mult
             )
             position = {
                 "side": side,
-                "entry_time_ms": candle.open_time_ms,
+                "entry_time_ms": entry_time_ms,
                 "entry_price": entry_price,
                 "stop_loss": stop_loss,
                 "take_profit": take_profit,
                 "quantity": quantity,
+                "entry_index": entry_index,
             }
 
     return BacktestResult(

@@ -51,6 +51,7 @@ class KlineStreamListener:
                 high=float(k["h"]),
                 low=float(k["l"]),
                 close=float(k["c"]),
+                volume=float(k["v"]),
             )
         except Exception as exc:  # noqa: BLE001 - bozuk/beklenmeyen mesaj formatı
             self._log_error(f"Mesaj ayrıştırma hatası: {exc}")

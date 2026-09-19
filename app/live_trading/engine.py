@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from app.backtest.engine import Candle
 from app.binance_client import (
     INTERVAL_MS_MAP,
+    cancel_all_futures_open_orders,
     cancel_futures_order,
     get_futures_historical_klines,
     get_futures_open_orders,
@@ -56,6 +57,17 @@ class LiveTradingEngine:
 
     Aynı anda tek pozisyon açık tutulur; pozisyon açıkken yeni sinyaller
     yok sayılır.
+
+    Strateji `max_holding_bars` tanımlıyorsa (ör. likidite avı stratejisi),
+    pozisyon SL/TP'ye değmeden bu kadar mum kapanışı boyunca açık kalırsa
+    borsadaki SL/TP emirleri iptal edilip pozisyon piyasa fiyatından
+    (reduceOnly) zorla kapatılır ("TIME").
+
+    `Strategy.entry_timing="next_open"` için canlıda ayrı bir kod yolu
+    gerekmez: sinyal, onay mumu kapanır kapanmaz algılanıp anında işleme
+    konur — bu, gerçek zamanlı olarak zaten "bir sonraki mumun açılışında
+    giriş" anlamına gelir. Backtest'te ise bu bekleme app.backtest.engine
+    tarafından açıkça simüle edilir.
     """
 
     def __init__(
@@ -120,7 +132,14 @@ class LiveTradingEngine:
         start_ms = now_ms - self.strategy.warmup_candles * interval_ms
         raw = get_futures_historical_klines(self.symbol, self.interval, start_ms, now_ms)
         candles = [
-            Candle(open_time_ms=int(k[0]), open=float(k[1]), high=float(k[2]), low=float(k[3]), close=float(k[4]))
+            Candle(
+                open_time_ms=int(k[0]),
+                open=float(k[1]),
+                high=float(k[2]),
+                low=float(k[3]),
+                close=float(k[4]),
+                volume=float(k[5]),
+            )
             for k in raw
         ]
         # REST'ten dönen son mum henüz kapanmamış (an itibarıyla oluşan) olabilir;
@@ -133,6 +152,10 @@ class LiveTradingEngine:
         self._candles.append(candle)
 
         if self._open_trade is not None:
+            if self.strategy.max_holding_bars is not None:
+                self._open_trade["bars_since_entry"] += 1
+                if self._open_trade["bars_since_entry"] >= self.strategy.max_holding_bars:
+                    self._force_close_on_timeout()
             return  # pozisyon açıkken yeni sinyal aranmaz
 
         signals = self.strategy.compute_signals(self._candles)
@@ -208,10 +231,33 @@ class LiveTradingEngine:
                 "entry_order_id": entry_order.get("orderId"),
                 "sl_order_id": sl_order.get("orderId"),
                 "tp_order_id": tp_order.get("orderId"),
+                "bars_since_entry": 0,
             }
             self.on_order_placed(dict(self._open_trade))
         except Exception as exc:  # noqa: BLE001 - gerçek para emri hatası; kullanıcıya iletilmeli
             self.on_error(f"Emir gönderilemedi: {exc}")
+
+    def _force_close_on_timeout(self) -> None:
+        """Strateji `max_holding_bars` tanımlıyorsa ve pozisyon SL/TP'ye
+        değmeden bu kadar mum boyunca açık kaldıysa, borsadaki SL/TP
+        emirlerini iptal edip pozisyonu piyasa fiyatından (reduceOnly)
+        kapatır."""
+        trade = self._open_trade
+        self.on_status(
+            f"Maksimum bekleme süresi ({self.strategy.max_holding_bars} mum) doldu, "
+            f"pozisyon piyasa fiyatından kapatılıyor."
+        )
+        try:
+            cancel_all_futures_open_orders(self.api_key, self.api_secret, self.symbol)
+            exit_side = "SELL" if trade["side"] == "LONG" else "BUY"
+            place_futures_market_order(
+                self.api_key, self.api_secret, self.symbol, exit_side, trade["quantity"], reduce_only=True
+            )
+        except Exception as exc:  # noqa: BLE001 - gerçek para emri hatası; kullanıcıya iletilmeli
+            self.on_error(f"Zaman aşımı kapatma emri gönderilemedi: {exc}")
+            return
+        self._open_trade = None
+        self.on_position_closed("TIME")
 
     async def _poll_position_loop(self, stop_event: asyncio.Event) -> None:
         while not stop_event.is_set():

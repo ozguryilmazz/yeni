@@ -23,11 +23,13 @@ def _always_none(candles):
     return [None] * len(candles)
 
 
-def _fixed_strategy(compute_signals, warmup=1):
-    return Strategy(name="test", compute_signals=compute_signals, warmup_candles=warmup)
+def _fixed_strategy(compute_signals, warmup=1, max_holding_bars=None):
+    return Strategy(
+        name="test", compute_signals=compute_signals, warmup_candles=warmup, max_holding_bars=max_holding_bars
+    )
 
 
-def _make_engine(mode="auto", compute_signals=_always_long, on_error=None):
+def _make_engine(mode="auto", compute_signals=_always_long, on_error=None, max_holding_bars=None):
     calls = {
         "status": [],
         "signal": [],
@@ -41,7 +43,7 @@ def _make_engine(mode="auto", compute_signals=_always_long, on_error=None):
         api_secret="secret",
         symbol="btcusdt",
         interval="5m",
-        strategy=_fixed_strategy(compute_signals),
+        strategy=_fixed_strategy(compute_signals, max_holding_bars=max_holding_bars),
         risk=RiskParams(margin_usd=2.0, leverage=5, sl_fee_mult=10.0, tp_fee_mult=20.0),
         mode=mode,
         on_status=lambda msg: calls["status"].append(msg),
@@ -219,3 +221,49 @@ def test_backfill_candles_drops_last_possibly_unclosed_kline():
 
     assert len(engine._candles) == 1
     assert engine._candles[0].open_time_ms == 0
+
+
+def test_backfill_candles_parses_volume():
+    engine, _ = _make_engine(mode="auto")
+    raw_klines = [
+        [0, "100", "101", "99", "100", "42.5", 0, "0", 0, "0", "0", "0"],
+        [300_000, "100", "101", "99", "100.5", "1", 0, "0", 0, "0", "0", "0"],
+    ]
+
+    with patch("app.live_trading.engine.get_futures_historical_klines", return_value=raw_klines):
+        engine._backfill_candles()
+
+    assert engine._candles[0].volume == pytest.approx(42.5)
+
+
+def test_max_holding_bars_force_closes_position_after_n_bars():
+    engine, calls = _make_engine(mode="auto", compute_signals=_always_none, max_holding_bars=2)
+    engine._open_trade = {"side": "LONG", "quantity": 0.1, "sl_order_id": 1, "tp_order_id": 2, "bars_since_entry": 0}
+
+    with (
+        patch("app.live_trading.engine.cancel_all_futures_open_orders") as mock_cancel_all,
+        patch("app.live_trading.engine.place_futures_market_order") as mock_close_order,
+    ):
+        engine._on_candle_closed(Candle(open_time_ms=0, open=100, high=100, low=100, close=100))
+        assert engine._open_trade is not None  # 1. mum: henüz zaman aşımına uğramadı
+        mock_close_order.assert_not_called()
+
+        engine._on_candle_closed(Candle(open_time_ms=60_000, open=100, high=100, low=100, close=100))
+
+    mock_cancel_all.assert_called_once_with("key", "secret", "BTCUSDT")
+    mock_close_order.assert_called_once_with("key", "secret", "BTCUSDT", "SELL", 0.1, reduce_only=True)
+    assert engine._open_trade is None
+    assert calls["position_closed"] == ["TIME"]
+
+
+def test_max_holding_bars_none_never_force_closes():
+    engine, calls = _make_engine(mode="auto", compute_signals=_always_none, max_holding_bars=None)
+    engine._open_trade = {"side": "LONG", "quantity": 0.1, "sl_order_id": 1, "tp_order_id": 2, "bars_since_entry": 0}
+
+    with patch("app.live_trading.engine.place_futures_market_order") as mock_close_order:
+        for _ in range(20):
+            engine._on_candle_closed(Candle(open_time_ms=0, open=100, high=100, low=100, close=100))
+
+    mock_close_order.assert_not_called()
+    assert engine._open_trade is not None
+    assert calls["position_closed"] == []

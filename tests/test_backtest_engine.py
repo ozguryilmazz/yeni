@@ -186,3 +186,63 @@ def test_custom_margin_and_leverage_change_quantity():
     result = run_backtest(candles, 0, _fixed_signals("LONG", None), margin_usd=4.0, leverage=10)
 
     assert result.trades[0].quantity == pytest.approx(0.4)  # (4$ * 10x) / 100
+
+
+def test_entry_timing_next_open_enters_at_following_candles_open():
+    candles = [
+        Candle(open_time_ms=0, open=100, high=100, low=100, close=100),  # sinyal burada oluşuyor
+        Candle(open_time_ms=300_000, open=105, high=110, low=104.5, close=108),  # giriş burada (open=105)
+    ]
+    result = run_backtest(candles, 0, _fixed_signals("LONG", None), entry_timing="next_open")
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.entry_price == pytest.approx(105)  # candles[1].open, candles[0].close değil
+    assert trade.entry_time_ms == 300_000
+    # SL/TP mesafesi entry fiyatının sabit bir yüzdesi (bkz. test_position_sizing.py) —
+    # entry=100 için SL_DISTANCE/TP_DISTANCE sabitleri burada entry=105 olduğundan geçerli değil.
+    assert trade.stop_loss == pytest.approx(105 * (1 - SL_DISTANCE / 100))
+    assert trade.take_profit == pytest.approx(105 * (1 + TP_DISTANCE / 100))
+    assert trade.exit_reason == "TP"
+
+
+def test_entry_timing_next_open_skips_signal_when_no_next_candle_yet():
+    candles = [Candle(open_time_ms=0, open=100, high=100, low=100, close=100)]  # sinyal var ama sonraki mum yok
+    result = run_backtest(candles, 0, _fixed_signals("LONG"), entry_timing="next_open")
+
+    assert result.trades == []
+
+
+def test_max_holding_bars_forces_close_when_neither_sl_nor_tp_hit():
+    candles = [
+        Candle(open_time_ms=0, open=100, high=100, low=100, close=100),  # giriş (SL=99, TP=102)
+        Candle(open_time_ms=300_000, open=100, high=100.5, low=99.5, close=100.2),  # 1. mum, SL/TP yok
+        Candle(open_time_ms=600_000, open=100, high=100.5, low=99.5, close=100.3),  # 2. mum, zaman aşımı burada
+    ]
+    result = run_backtest(candles, 0, _fixed_signals("LONG", None, None), max_holding_bars=2)
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.exit_reason == "TIME"
+    assert trade.exit_price == pytest.approx(100.3)
+
+
+def test_max_holding_bars_does_not_override_tp_hit_in_same_candle():
+    candles = [
+        Candle(open_time_ms=0, open=100, high=100, low=100, close=100),  # giriş (TP=102)
+        Candle(open_time_ms=300_000, open=100, high=103, low=100, close=102),  # TP burada vurulur = zaman aşımı da burada
+    ]
+    result = run_backtest(candles, 0, _fixed_signals("LONG", None), max_holding_bars=1)
+
+    assert result.trades[0].exit_reason == "TP"
+
+
+def test_no_max_holding_bars_by_default_position_stays_open_until_sl_tp_or_eod():
+    candles = [
+        Candle(open_time_ms=0, open=100, high=100, low=100, close=100),
+        Candle(open_time_ms=300_000, open=100, high=100.5, low=99.5, close=100.2),
+        Candle(open_time_ms=600_000, open=100, high=100.5, low=99.5, close=100.3),
+    ]
+    result = run_backtest(candles, 0, _fixed_signals("LONG", None, None))
+
+    assert result.trades[0].exit_reason == "EOD"
