@@ -4,6 +4,7 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMainWindow, QTabWidget, QVBoxLayout, QWidget
 
 from app.ui.backtest_tab import BacktestTab
+from app.ui.grid_tab import GridTab
 from app.ui.live_trading_tab import LiveTradingTab
 from app.ui.market_tab import MarketTab
 from app.ui.transfers_tab import TransfersTab
@@ -28,6 +29,7 @@ class MainWindow(QMainWindow):
         self.transfers_tab = TransfersTab(user_id)
         self.whale_trap_tab = WhaleTrapTab()
         self.backtest_tab = BacktestTab()
+        self.grid_tab = GridTab()
         self.live_trading_tab = LiveTradingTab(user_id)
 
         tabs = QTabWidget()
@@ -35,6 +37,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.transfers_tab, "Transferler")
         tabs.addTab(self.whale_trap_tab, "Tuzak Skoru")
         tabs.addTab(self.backtest_tab, "Backtest")
+        tabs.addTab(self.grid_tab, "Grid")
         tabs.addTab(self.live_trading_tab, "Canlı İşlem")
         layout.addWidget(tabs)
 

@@ -111,8 +111,10 @@ def create_universal_transfer(api_key: str, api_secret: str, transfer_type: str,
 # ---- Piyasa verisi (public, API key gerekmez) -----------------------------
 
 
-def _public_get(path: str, params: dict | None = None, timeout: float = 10) -> dict | list:
-    with httpx.Client(base_url=BINANCE_FUTURES_BASE_URL, timeout=timeout) as client:
+def _public_get(
+    path: str, params: dict | None = None, timeout: float = 10, base_url: str = BINANCE_FUTURES_BASE_URL
+) -> dict | list:
+    with httpx.Client(base_url=base_url, timeout=timeout) as client:
         response = client.get(path, params=params)
     _raise_for_error(response)
     return response.json()
@@ -251,6 +253,24 @@ def get_futures_market_overview(period: str) -> list[dict]:
                 overview.append({"symbol": symbol, **stats})
 
     return overview
+
+
+def get_futures_24h_tickers() -> list[dict]:
+    """GET /fapi/v1/ticker/24hr (sembol verilmeden) — TÜM USDT-M futures
+    sembolleri için 24 saatlik istatistikleri (quoteVolume dahil) TEK istekte
+    döner. Coin tarama (screener, bkz. app.grid_trading.screener) gibi tüm
+    sembollerin sadece 24s hacmine ihtiyaç duyan kullanımlar için
+    get_futures_market_overview'dan çok daha ucuzdur (o fonksiyon sembol
+    başına ayrı kline isteği atar; bunun tek bir toplu isteği var)."""
+    data = _public_get("/fapi/v1/ticker/24hr", timeout=15)
+    return data if isinstance(data, list) else []
+
+
+def get_spot_24h_tickers() -> list[dict]:
+    """GET /api/v3/ticker/24hr (sembol verilmeden) — TÜM spot sembolleri için
+    24 saatlik istatistikleri (quoteVolume dahil) TEK istekte döner."""
+    data = _public_get("/api/v3/ticker/24hr", timeout=15, base_url=BINANCE_BASE_URL)
+    return data if isinstance(data, list) else []
 
 
 # ---- Futures gerçek işlem (canlı) ------------------------------------------

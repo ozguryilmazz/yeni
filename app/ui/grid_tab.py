@@ -1,0 +1,529 @@
+from datetime import datetime, timezone
+
+from PySide6.QtCore import QDateTime
+from PySide6.QtGui import QBrush, QColor, QGuiApplication
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDateTimeEdit,
+    QDoubleSpinBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from app.grid_trading.grid import DEFAULT_GRID_COUNT, GridBacktestResult
+from app.grid_trading.range_methods import DEFAULT_RANGE_METHOD, RANGE_METHOD_LABELS, GridRange
+from app.grid_trading.screener import CandidateResult, ScreenerCriteria
+from app.grid_trading.service import (
+    DEFAULT_CAPITAL_USD,
+    DEFAULT_GRID_BACKTEST_INTERVAL,
+    DEFAULT_RANGE_INTERVAL,
+    SUPPORTED_GRID_INTERVALS,
+)
+from app.ui.market_tab import NumericTableWidgetItem
+from app.workers import ComputeGridRangeWorker, RunGridBacktestWorker, RunGridScreenerWorker
+
+RANGE_INTERVAL_LABELS = {"4h": "4 Saatlik", "1d": "Günlük"}
+BACKTEST_INTERVAL_LABELS = {"5m": "5 Dakika", "15m": "15 Dakika", "1h": "1 Saat", "4h": "4 Saatlik"}
+FAILED_REASON_LABELS = {
+    "spot_volume": "Spot Hacim",
+    "futures_volume": "Futures Hacim",
+    "volatility": "Volatilite",
+    "trend": "Trend",
+}
+
+
+def _format_usd_compact(value: float | None) -> str:
+    if value is None:
+        return "—"
+    if abs(value) >= 1_000_000:
+        return f"{value / 1_000_000:,.1f}M$"
+    if abs(value) >= 1_000:
+        return f"{value / 1_000:,.1f}K$"
+    return f"{value:,.2f}$"
+
+
+def _format_pct(value: float | None) -> str:
+    return "—" if value is None else f"%{value * 100:.2f}"
+
+
+def _format_number(value: float | None, decimals: int = 2) -> str:
+    return "—" if value is None else f"{value:,.{decimals}f}"
+
+
+class GridTab(QWidget):
+    """'Grid' sekmesi: 3 aşamalı grid ticareti iş akışı.
+
+    1. **Tarama**: TÜM USDT-M futures sembollerini likidite (24s hacim),
+       volatilite (ATR14/fiyat %2-%6) ve trend-olmama (ADX14<25) kurallarına
+       göre tarar (bkz. app.grid_trading.screener) — grid için uygun aday
+       coinleri bulur.
+    2. **Aralık Hesaplama**: seçilen sembol için 3 yöntemden biriyle
+       (destek/direnç, Bollinger, ATR — bkz. app.grid_trading.range_methods)
+       grid'in alt/üst sınırını önerir.
+    3. **Grid Backtest**: önerilen (veya elle girilen) sınırlar, grid sayısı
+       ve sermaye ile geçmiş veri üzerinde AL/SAT dolum simülasyonu çalıştırır
+       (bkz. app.grid_trading.grid).
+
+    Bu sekme SADECE simülasyon yapar — gerçek para ile canlı grid emri
+    göndermez (bu, ayrı bir sonraki adımdır)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._screener_worker: RunGridScreenerWorker | None = None
+        self._range_worker: ComputeGridRangeWorker | None = None
+        self._backtest_worker: RunGridBacktestWorker | None = None
+        self._screener_results: list[CandidateResult] = []
+        self._backtest_result: GridBacktestResult | None = None
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(self._build_screener_section())
+        layout.addLayout(self._build_range_section())
+        layout.addLayout(self._build_backtest_section())
+
+    # ---- 1. Tarama ----------------------------------------------------
+
+    def _build_screener_section(self) -> QVBoxLayout:
+        section = QVBoxLayout()
+        section.addWidget(QLabel("<b>1. Coin Tarama</b>"))
+
+        hint = QLabel(
+            "24s hacim (spotta ≥50M$, futures'ta ≥200M$), volatilite (günlük ATR14/fiyat "
+            "%2-%6 arası) ve trend olmama (4 saatlik ADX14<25) kriterlerine göre TÜM USDT-M "
+            "futures sembollerini tarar. Bir satıra çift tıklayarak sembolü aşağıdaki "
+            "Aralık Hesaplama ve Backtest bölümlerine seçebilirsiniz."
+        )
+        hint.setWordWrap(True)
+        section.addWidget(hint)
+
+        controls = QHBoxLayout()
+        self.scan_button = QPushButton("Coin Tara")
+        self.scan_button.clicked.connect(self._handle_scan)
+        controls.addWidget(self.scan_button)
+
+        self.only_eligible_checkbox = QCheckBox("Sadece uygun coinleri göster")
+        self.only_eligible_checkbox.setChecked(True)
+        self.only_eligible_checkbox.stateChanged.connect(self._render_screener_results)
+        controls.addWidget(self.only_eligible_checkbox)
+        controls.addStretch()
+        section.addLayout(controls)
+
+        self.screener_status_label = QLabel("—")
+        section.addWidget(self.screener_status_label)
+
+        self.screener_table = QTableWidget(0, 6)
+        self.screener_table.setHorizontalHeaderLabels(
+            ["Sembol", "Spot Hacim", "Futures Hacim", "ATR%", "ADX", "Durum"]
+        )
+        self.screener_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.screener_table.setSortingEnabled(True)
+        self.screener_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.screener_table.cellDoubleClicked.connect(self._handle_screener_row_selected)
+        self.screener_table.setMaximumHeight(220)
+        section.addWidget(self.screener_table)
+
+        return section
+
+    def _handle_scan(self) -> None:
+        self.scan_button.setEnabled(False)
+        self.screener_status_label.setText("Taranıyor… (yüzlerce sembol için birkaç dakika sürebilir)")
+        self._screener_worker = RunGridScreenerWorker(ScreenerCriteria())
+        self._screener_worker.success.connect(self._on_scan_finished)
+        self._screener_worker.error.connect(self._on_scan_error)
+        self._screener_worker.start()
+
+    def _on_scan_finished(self, results: list[CandidateResult]) -> None:
+        self.scan_button.setEnabled(True)
+        self._screener_results = results
+        passing = sum(1 for r in results if r.passes)
+        self.screener_status_label.setText(f"{len(results)} sembol tarandı, {passing} tanesi uygun.")
+        self._render_screener_results()
+
+    def _on_scan_error(self, message: str) -> None:
+        self.scan_button.setEnabled(True)
+        self.screener_status_label.setText("—")
+        QMessageBox.warning(self, "Tarama başarısız", message)
+
+    def _render_screener_results(self) -> None:
+        rows = self._screener_results
+        if self.only_eligible_checkbox.isChecked():
+            rows = [r for r in rows if r.passes]
+
+        self.screener_table.setSortingEnabled(False)
+        self.screener_table.setRowCount(len(rows))
+        for i, candidate in enumerate(rows):
+            self.screener_table.setItem(i, 0, QTableWidgetItem(candidate.symbol))
+            self.screener_table.setItem(
+                i, 1, NumericTableWidgetItem(candidate.spot_volume_usd or 0.0, _format_usd_compact(candidate.spot_volume_usd))
+            )
+            self.screener_table.setItem(
+                i,
+                2,
+                NumericTableWidgetItem(
+                    candidate.futures_volume_usd or 0.0, _format_usd_compact(candidate.futures_volume_usd)
+                ),
+            )
+            self.screener_table.setItem(
+                i, 3, NumericTableWidgetItem(candidate.atr_pct or 0.0, _format_pct(candidate.atr_pct))
+            )
+            self.screener_table.setItem(
+                i, 4, NumericTableWidgetItem(candidate.adx_value or 0.0, _format_number(candidate.adx_value))
+            )
+            status_text = "Uygun" if candidate.passes else ", ".join(
+                FAILED_REASON_LABELS.get(r, r) for r in candidate.failed_reasons
+            )
+            status_item = QTableWidgetItem(status_text)
+            status_item.setForeground(QBrush(QColor("#2e7d32" if candidate.passes else "#c62828")))
+            self.screener_table.setItem(i, 5, status_item)
+        self.screener_table.setSortingEnabled(True)
+
+    def _handle_screener_row_selected(self, row: int, _column: int) -> None:
+        symbol_item = self.screener_table.item(row, 0)
+        if symbol_item:
+            self.symbol_input.setText(symbol_item.text())
+
+    # ---- 2. Aralık Hesaplama -------------------------------------------
+
+    def _build_range_section(self) -> QVBoxLayout:
+        section = QVBoxLayout()
+        section.addWidget(QLabel("<b>2. Grid Aralığı (Alt/Üst Sınır) Hesaplama</b>"))
+
+        symbol_row = QHBoxLayout()
+        symbol_row.addWidget(QLabel("Sembol"))
+        self.symbol_input = QLineEdit("BTCUSDT")
+        symbol_row.addWidget(self.symbol_input)
+        self.paste_button = QPushButton("Yapıştır")
+        self.paste_button.clicked.connect(self._handle_paste)
+        symbol_row.addWidget(self.paste_button)
+
+        symbol_row.addWidget(QLabel("Zaman Dilimi"))
+        self.range_interval_combo = QComboBox()
+        for interval, label in RANGE_INTERVAL_LABELS.items():
+            self.range_interval_combo.addItem(label, interval)
+        self.range_interval_combo.setCurrentIndex(self.range_interval_combo.findData(DEFAULT_RANGE_INTERVAL))
+        symbol_row.addWidget(self.range_interval_combo)
+
+        symbol_row.addWidget(QLabel("Metot"))
+        self.method_combo = QComboBox()
+        for method, label in RANGE_METHOD_LABELS.items():
+            self.method_combo.addItem(label, method)
+        self.method_combo.setCurrentIndex(self.method_combo.findData(DEFAULT_RANGE_METHOD))
+        self.method_combo.currentIndexChanged.connect(self._update_method_params_visibility)
+        symbol_row.addWidget(self.method_combo)
+        section.addLayout(symbol_row)
+
+        section.addLayout(self._build_support_resistance_params())
+        section.addLayout(self._build_bollinger_params())
+        section.addLayout(self._build_atr_params())
+        self._update_method_params_visibility()
+
+        compute_row = QHBoxLayout()
+        self.compute_range_button = QPushButton("Aralık Hesapla")
+        self.compute_range_button.clicked.connect(self._handle_compute_range)
+        compute_row.addWidget(self.compute_range_button)
+        compute_row.addStretch()
+        section.addLayout(compute_row)
+
+        self.range_result_label = QLabel("—")
+        self.range_result_label.setWordWrap(True)
+        section.addWidget(self.range_result_label)
+
+        return section
+
+    def _build_support_resistance_params(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Min. Dokunuş"))
+        self.min_touches_input = QSpinBox()
+        self.min_touches_input.setRange(2, 10)
+        self.min_touches_input.setValue(2)
+        row.addWidget(self.min_touches_input)
+
+        row.addWidget(QLabel("Marj %"))
+        self.margin_pct_input = QDoubleSpinBox()
+        self.margin_pct_input.setRange(0.0, 10.0)
+        self.margin_pct_input.setSingleStep(0.1)
+        self.margin_pct_input.setValue(1.5)
+        row.addWidget(self.margin_pct_input)
+        row.addStretch()
+        self._support_resistance_params_row = row
+        return row
+
+    def _build_bollinger_params(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Periyot"))
+        self.bollinger_period_input = QSpinBox()
+        self.bollinger_period_input.setRange(2, 200)
+        self.bollinger_period_input.setValue(20)
+        row.addWidget(self.bollinger_period_input)
+
+        row.addWidget(QLabel("Std. Sapma Çarpanı"))
+        self.bollinger_std_input = QDoubleSpinBox()
+        self.bollinger_std_input.setRange(0.5, 5.0)
+        self.bollinger_std_input.setSingleStep(0.1)
+        self.bollinger_std_input.setValue(2.0)
+        row.addWidget(self.bollinger_std_input)
+        row.addStretch()
+        self._bollinger_params_row = row
+        return row
+
+    def _build_atr_params(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel("ATR Periyot"))
+        self.atr_period_input = QSpinBox()
+        self.atr_period_input.setRange(2, 200)
+        self.atr_period_input.setValue(14)
+        row.addWidget(self.atr_period_input)
+
+        row.addWidget(QLabel("Çarpan (k)"))
+        self.atr_k_input = QDoubleSpinBox()
+        self.atr_k_input.setRange(0.5, 20.0)
+        self.atr_k_input.setSingleStep(0.5)
+        self.atr_k_input.setValue(3.0)
+        row.addWidget(self.atr_k_input)
+        row.addStretch()
+        self._atr_params_row = row
+        return row
+
+    def _update_method_params_visibility(self) -> None:
+        method = self.method_combo.currentData()
+        self._set_row_visible(self._support_resistance_params_row, method == "support_resistance")
+        self._set_row_visible(self._bollinger_params_row, method == "bollinger")
+        self._set_row_visible(self._atr_params_row, method == "atr")
+
+    @staticmethod
+    def _set_row_visible(row: QHBoxLayout, visible: bool) -> None:
+        for i in range(row.count()):
+            widget = row.itemAt(i).widget()
+            if widget is not None:
+                widget.setVisible(visible)
+
+    def _handle_paste(self) -> None:
+        text = QGuiApplication.clipboard().text().strip().upper()
+        if text:
+            self.symbol_input.setText(text)
+
+    def _handle_compute_range(self) -> None:
+        symbol = self.symbol_input.text().strip().upper()
+        if not symbol:
+            QMessageBox.warning(self, "Grid", "Bir sembol girin (ör. BTCUSDT)")
+            return
+
+        method = self.method_combo.currentData()
+        method_kwargs = self._current_method_kwargs(method)
+
+        self.compute_range_button.setEnabled(False)
+        self.range_result_label.setText("Hesaplanıyor…")
+        self._range_worker = ComputeGridRangeWorker(
+            symbol, method, self.range_interval_combo.currentData(), 120, method_kwargs
+        )
+        self._range_worker.success.connect(self._on_range_computed)
+        self._range_worker.error.connect(self._on_range_error)
+        self._range_worker.start()
+
+    def _current_method_kwargs(self, method: str) -> dict:
+        if method == "support_resistance":
+            return {"min_touches": self.min_touches_input.value(), "margin_pct": self.margin_pct_input.value() / 100}
+        if method == "bollinger":
+            return {"period": self.bollinger_period_input.value(), "std_mult": self.bollinger_std_input.value()}
+        if method == "atr":
+            return {"period": self.atr_period_input.value(), "k": self.atr_k_input.value()}
+        return {}
+
+    def _on_range_computed(self, grid_range: GridRange) -> None:
+        self.compute_range_button.setEnabled(True)
+        self.lower_price_input.setValue(grid_range.lower_price)
+        self.upper_price_input.setValue(grid_range.upper_price)
+
+        details = ", ".join(f"{k}: {v:.6g}" if isinstance(v, float) else f"{k}: {v}" for k, v in grid_range.details.items())
+        self.range_result_label.setText(
+            f"<b>Alt Sınır:</b> {grid_range.lower_price:,.6f} &nbsp; <b>Üst Sınır:</b> {grid_range.upper_price:,.6f}"
+            f"<br><span style='color:#666;'>{details}</span>"
+        )
+
+    def _on_range_error(self, message: str) -> None:
+        self.compute_range_button.setEnabled(True)
+        self.range_result_label.setText("—")
+        QMessageBox.warning(self, "Aralık hesaplanamadı", message)
+
+    # ---- 3. Grid Backtest ------------------------------------------------
+
+    def _build_backtest_section(self) -> QVBoxLayout:
+        section = QVBoxLayout()
+        section.addWidget(QLabel("<b>3. Grid Backtest</b>"))
+
+        bounds_row = QHBoxLayout()
+        bounds_row.addWidget(QLabel("Alt Sınır"))
+        self.lower_price_input = QDoubleSpinBox()
+        self.lower_price_input.setRange(0.000001, 10_000_000.0)
+        self.lower_price_input.setDecimals(6)
+        self.lower_price_input.setValue(90.0)
+        bounds_row.addWidget(self.lower_price_input)
+
+        bounds_row.addWidget(QLabel("Üst Sınır"))
+        self.upper_price_input = QDoubleSpinBox()
+        self.upper_price_input.setRange(0.000001, 10_000_000.0)
+        self.upper_price_input.setDecimals(6)
+        self.upper_price_input.setValue(110.0)
+        bounds_row.addWidget(self.upper_price_input)
+
+        bounds_row.addWidget(QLabel("Grid Sayısı"))
+        self.grid_count_input = QSpinBox()
+        self.grid_count_input.setRange(2, 500)
+        self.grid_count_input.setValue(DEFAULT_GRID_COUNT)
+        bounds_row.addWidget(self.grid_count_input)
+
+        bounds_row.addWidget(QLabel("Sermaye (USD)"))
+        self.capital_input = QDoubleSpinBox()
+        self.capital_input.setRange(1.0, 100_000_000.0)
+        self.capital_input.setDecimals(2)
+        self.capital_input.setValue(DEFAULT_CAPITAL_USD)
+        bounds_row.addWidget(self.capital_input)
+        section.addLayout(bounds_row)
+
+        date_row = QHBoxLayout()
+        date_row.addWidget(QLabel("Zaman Dilimi"))
+        self.backtest_interval_combo = QComboBox()
+        for interval in SUPPORTED_GRID_INTERVALS:
+            self.backtest_interval_combo.addItem(BACKTEST_INTERVAL_LABELS.get(interval, interval), interval)
+        self.backtest_interval_combo.setCurrentIndex(
+            self.backtest_interval_combo.findData(DEFAULT_GRID_BACKTEST_INTERVAL)
+        )
+        date_row.addWidget(self.backtest_interval_combo)
+
+        date_row.addWidget(QLabel("Başlangıç"))
+        self.start_input = QDateTimeEdit(QDateTime.currentDateTimeUtc().addDays(-14))
+        self.start_input.setCalendarPopup(True)
+        self.start_input.setDisplayFormat("dd.MM.yyyy HH:mm")
+        date_row.addWidget(self.start_input)
+
+        date_row.addWidget(QLabel("Bitiş"))
+        self.end_input = QDateTimeEdit(QDateTime.currentDateTimeUtc())
+        self.end_input.setCalendarPopup(True)
+        self.end_input.setDisplayFormat("dd.MM.yyyy HH:mm")
+        date_row.addWidget(self.end_input)
+
+        self.run_backtest_button = QPushButton("Grid Backtest Çalıştır")
+        self.run_backtest_button.clicked.connect(self._handle_run_backtest)
+        date_row.addWidget(self.run_backtest_button)
+        date_row.addStretch()
+        section.addLayout(date_row)
+
+        hint = QLabel(
+            "Sabit sermaye grid sayısına eşit bölünüp ilk mumun açılışına göre sabit bir "
+            "miktara çevrilir; her hücre AL+SAT tamamlandığında yeniden kurulur. Fiyat "
+            "aralığın dışına çıkarsa o yöndeki emirler tükenir (stop-loss YOK) — kalan "
+            "envanter/nakit sadece mark-to-market izlenir. Bu sekme sadece geçmiş veri "
+            "üzerinde simülasyon yapar, gerçek işlem açmaz."
+        )
+        hint.setWordWrap(True)
+        section.addWidget(hint)
+
+        self.backtest_summary_label = QLabel("—")
+        self.backtest_summary_label.setWordWrap(True)
+        section.addWidget(self.backtest_summary_label)
+
+        self.grid_trade_table = QTableWidget(0, 6)
+        self.grid_trade_table.setHorizontalHeaderLabels(
+            ["Alış Zamanı", "Alış Fiyatı", "Satış Zamanı", "Satış Fiyatı", "Miktar", "Net K/Z (USD)"]
+        )
+        self.grid_trade_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        section.addWidget(self.grid_trade_table)
+
+        return section
+
+    def _handle_run_backtest(self) -> None:
+        symbol = self.symbol_input.text().strip().upper()
+        if not symbol:
+            QMessageBox.warning(self, "Grid Backtest", "Bir sembol girin (ör. BTCUSDT)")
+            return
+        if self.lower_price_input.value() >= self.upper_price_input.value():
+            QMessageBox.warning(self, "Grid Backtest", "Alt sınır, üst sınırdan küçük olmalı")
+            return
+
+        start = self.start_input.dateTime().toPython().replace(tzinfo=timezone.utc)
+        end = self.end_input.dateTime().toPython().replace(tzinfo=timezone.utc)
+        if start >= end:
+            QMessageBox.warning(self, "Grid Backtest", "Başlangıç tarihi bitiş tarihinden önce olmalı")
+            return
+
+        self.run_backtest_button.setEnabled(False)
+        self.backtest_summary_label.setText("Çalışıyor…")
+        self.grid_trade_table.setRowCount(0)
+
+        self._backtest_worker = RunGridBacktestWorker(
+            symbol,
+            start,
+            end,
+            self.backtest_interval_combo.currentData(),
+            self.lower_price_input.value(),
+            self.upper_price_input.value(),
+            self.grid_count_input.value(),
+            self.capital_input.value(),
+        )
+        self._backtest_worker.success.connect(self._on_backtest_finished)
+        self._backtest_worker.error.connect(self._on_backtest_error)
+        self._backtest_worker.start()
+
+    def _on_backtest_finished(self, result: GridBacktestResult) -> None:
+        self.run_backtest_button.setEnabled(True)
+        self._backtest_result = result
+        self._render_backtest_summary(result)
+        self._render_grid_trades(result)
+
+    def _on_backtest_error(self, message: str) -> None:
+        self.run_backtest_button.setEnabled(True)
+        self._backtest_result = None
+        self.backtest_summary_label.setText("—")
+        QMessageBox.warning(self, "Grid backtest çalıştırılamadı", message)
+
+    def _render_backtest_summary(self, result: GridBacktestResult) -> None:
+        pnl_color = "#2e7d32" if result.total_pnl_usd >= 0 else "#c62828"
+        realized_color = "#2e7d32" if result.realized_pnl_usd >= 0 else "#c62828"
+        unrealized_color = "#2e7d32" if result.unrealized_pnl_usd >= 0 else "#c62828"
+
+        lines = [
+            f"<b>Tamamlanan İşlem:</b> {len(result.trades)} &nbsp; "
+            f"<b>Gerçekleşen K/Z:</b> <span style='color:{realized_color};'>{result.realized_pnl_usd:+,.4f}$</span>",
+            f"<b>Envanter (Gerçekleşmemiş) K/Z:</b> "
+            f"<span style='color:{unrealized_color};'>{result.unrealized_pnl_usd:+,.4f}$</span> "
+            f"({result.final_inventory_qty:.6f} adet, {result.final_inventory_value_usd:,.2f}$ değerinde)",
+            f"<b>Toplam K/Z:</b> <span style='color:{pnl_color};'>{result.total_pnl_usd:+,.4f}$</span> &nbsp; "
+            f"<b>Toplam Komisyon:</b> {result.fees_usd:,.4f}$",
+            f"<b>Grid Aralığı:</b> {result.grid_levels[0]:,.6f} - {result.grid_levels[-1]:,.6f} "
+            f"({len(result.grid_levels) - 1} grid) &nbsp; "
+            f"<b>Başlangıç/Bitiş Fiyatı:</b> {result.start_price:,.6f} / {result.end_price:,.6f}",
+        ]
+        if result.breached_lower:
+            lines.append(
+                "<span style='color:#c62828;'>Fiyat, aralık boyunca en az bir kez ALT sınırın altına indi "
+                "— bu yöndeki AL emirleri tükendi.</span>"
+            )
+        if result.breached_upper:
+            lines.append(
+                "<span style='color:#c62828;'>Fiyat, aralık boyunca en az bir kez ÜST sınırın üstüne çıktı "
+                "— bu yöndeki SAT emirleri tükendi.</span>"
+            )
+        self.backtest_summary_label.setText("<br>".join(lines))
+
+    def _render_grid_trades(self, result: GridBacktestResult) -> None:
+        self.grid_trade_table.setRowCount(len(result.trades))
+        for i, trade in enumerate(result.trades):
+            self.grid_trade_table.setItem(i, 0, QTableWidgetItem(_format_ms(trade.buy_time_ms)))
+            self.grid_trade_table.setItem(i, 1, QTableWidgetItem(f"{trade.buy_price:,.6f}"))
+            self.grid_trade_table.setItem(i, 2, QTableWidgetItem(_format_ms(trade.sell_time_ms)))
+            self.grid_trade_table.setItem(i, 3, QTableWidgetItem(f"{trade.sell_price:,.6f}"))
+            self.grid_trade_table.setItem(i, 4, QTableWidgetItem(f"{trade.quantity:,.6f}"))
+            self.grid_trade_table.setItem(i, 5, QTableWidgetItem(f"{trade.net_pnl_usd:+,.4f}"))
+
+
+def _format_ms(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%d.%m.%Y %H:%M")

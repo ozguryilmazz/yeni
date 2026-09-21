@@ -1,4 +1,5 @@
 TAKER_FEE_RATE = 0.0005  # Binance USDT-M taker: %0.05
+MAKER_FEE_RATE = 0.0002  # Binance USDT-M maker: %0.02 -- grid emirleri limit/maker'dır
 
 MARGIN_USD = 2.0
 LEVERAGE = 5
