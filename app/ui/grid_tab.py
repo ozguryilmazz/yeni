@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -96,10 +97,23 @@ class GridTab(QWidget):
         self._screener_results: list[CandidateResult] = []
         self._backtest_result: GridBacktestResult | None = None
 
+        content = QWidget()
+        content_layout = QVBoxLayout(content)
+        content_layout.addLayout(self._build_screener_section())
+        content_layout.addLayout(self._build_range_section())
+        content_layout.addLayout(self._build_backtest_section())
+
+        # Bu sekmede çok sayıda bölüm (tarama tablosu, grafik, backtest formu +
+        # sonuç tablosu) alt alta dizili -- pencere boyunu kolayca aşabiliyor.
+        # Kaydırma alanı olmadan Qt bazı widget'ları sıkıştırıp üst üste
+        # bindirebiliyordu; bunun yerine gerektiğinde kaydırma çubuğu çıkar.
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(content)
+
         layout = QVBoxLayout(self)
-        layout.addLayout(self._build_screener_section())
-        layout.addLayout(self._build_range_section())
-        layout.addLayout(self._build_backtest_section())
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(scroll_area)
 
     # ---- 1. Tarama ----------------------------------------------------
 
@@ -251,7 +265,7 @@ class GridTab(QWidget):
         self.range_chart = QChart()
         self.range_chart.legend().hide()
         self.range_chart_view = QChartView(self.range_chart)
-        self.range_chart_view.setMinimumHeight(280)
+        self.range_chart_view.setFixedHeight(320)
         section.addWidget(self.range_chart_view)
 
         return section
