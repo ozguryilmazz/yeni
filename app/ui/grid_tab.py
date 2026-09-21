@@ -1,6 +1,15 @@
 from datetime import datetime, timezone
 
-from PySide6.QtCore import QDateTime
+from PySide6.QtCharts import (
+    QCandlestickSeries,
+    QCandlestickSet,
+    QChart,
+    QChartView,
+    QDateTimeAxis,
+    QLineSeries,
+    QValueAxis,
+)
+from PySide6.QtCore import QDateTime, Qt
 from PySide6.QtGui import QBrush, QColor, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -20,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.backtest.engine import Candle
 from app.grid_trading.grid import DEFAULT_GRID_COUNT, GridBacktestResult
 from app.grid_trading.range_methods import DEFAULT_RANGE_METHOD, RANGE_METHOD_LABELS, GridRange
 from app.grid_trading.screener import CandidateResult, ScreenerCriteria
@@ -28,6 +38,7 @@ from app.grid_trading.service import (
     DEFAULT_GRID_BACKTEST_INTERVAL,
     DEFAULT_RANGE_INTERVAL,
     SUPPORTED_GRID_INTERVALS,
+    RangePreview,
 )
 from app.ui.market_tab import NumericTableWidgetItem
 from app.workers import ComputeGridRangeWorker, RunGridBacktestWorker, RunGridScreenerWorker
@@ -237,6 +248,12 @@ class GridTab(QWidget):
         self.range_result_label.setWordWrap(True)
         section.addWidget(self.range_result_label)
 
+        self.range_chart = QChart()
+        self.range_chart.legend().hide()
+        self.range_chart_view = QChartView(self.range_chart)
+        self.range_chart_view.setMinimumHeight(280)
+        section.addWidget(self.range_chart_view)
+
         return section
 
     def _build_support_resistance_params(self) -> QHBoxLayout:
@@ -338,8 +355,9 @@ class GridTab(QWidget):
             return {"period": self.atr_period_input.value(), "k": self.atr_k_input.value()}
         return {}
 
-    def _on_range_computed(self, grid_range: GridRange) -> None:
+    def _on_range_computed(self, preview: RangePreview) -> None:
         self.compute_range_button.setEnabled(True)
+        grid_range = preview.grid_range
         self.lower_price_input.setValue(grid_range.lower_price)
         self.upper_price_input.setValue(grid_range.upper_price)
 
@@ -348,11 +366,63 @@ class GridTab(QWidget):
             f"<b>Alt Sınır:</b> {grid_range.lower_price:,.6f} &nbsp; <b>Üst Sınır:</b> {grid_range.upper_price:,.6f}"
             f"<br><span style='color:#666;'>{details}</span>"
         )
+        self._render_range_chart(preview.candles, grid_range)
 
     def _on_range_error(self, message: str) -> None:
         self.compute_range_button.setEnabled(True)
         self.range_result_label.setText("—")
         QMessageBox.warning(self, "Aralık hesaplanamadı", message)
+
+    def _render_range_chart(self, candles: list[Candle], grid_range: GridRange) -> None:
+        chart = self.range_chart
+        chart.removeAllSeries()
+        for axis in chart.axes():
+            chart.removeAxis(axis)
+        if not candles:
+            return
+
+        candle_series = QCandlestickSeries()
+        candle_series.setIncreasingColor(QColor("#2e7d32"))
+        candle_series.setDecreasingColor(QColor("#c62828"))
+        for candle in candles:
+            candle_series.append(QCandlestickSet(candle.open, candle.high, candle.low, candle.close, float(candle.open_time_ms)))
+        chart.addSeries(candle_series)
+
+        lower_series = self._make_bound_line("Alt Sınır", candles, grid_range.lower_price, "#1565c0")
+        chart.addSeries(lower_series)
+        upper_series = self._make_bound_line("Üst Sınır", candles, grid_range.upper_price, "#ef6c00")
+        chart.addSeries(upper_series)
+
+        axis_x = QDateTimeAxis()
+        axis_x.setFormat("dd.MM HH:mm")
+        axis_x.setRange(
+            QDateTime.fromMSecsSinceEpoch(candles[0].open_time_ms), QDateTime.fromMSecsSinceEpoch(candles[-1].open_time_ms)
+        )
+        chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
+
+        axis_y = QValueAxis()
+        y_min = min(min(c.low for c in candles), grid_range.lower_price)
+        y_max = max(max(c.high for c in candles), grid_range.upper_price)
+        padding = (y_max - y_min) * 0.05 if y_max > y_min else max(abs(y_max) * 0.01, 1e-9)
+        axis_y.setRange(y_min - padding, y_max + padding)
+        chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
+
+        for series in (candle_series, lower_series, upper_series):
+            series.attachAxis(axis_x)
+            series.attachAxis(axis_y)
+
+    @staticmethod
+    def _make_bound_line(name: str, candles: list[Candle], price: float, color: str) -> QLineSeries:
+        series = QLineSeries()
+        series.setName(name)
+        series.append(float(candles[0].open_time_ms), price)
+        series.append(float(candles[-1].open_time_ms), price)
+        pen = series.pen()
+        pen.setColor(QColor(color))
+        pen.setStyle(Qt.PenStyle.DashLine)
+        pen.setWidth(2)
+        series.setPen(pen)
+        return series
 
     # ---- 3. Grid Backtest ------------------------------------------------
 

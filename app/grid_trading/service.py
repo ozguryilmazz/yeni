@@ -1,4 +1,5 @@
 import time
+from dataclasses import dataclass
 from datetime import datetime
 
 from app.backtest.engine import Candle
@@ -32,22 +33,32 @@ def _fetch_candles(symbol: str, interval: str, start_ms: int, end_ms: int) -> li
     ]
 
 
+@dataclass
+class RangePreview:
+    grid_range: GridRange
+    candles: list[Candle]
+    """Aralığın hesaplandığı mumlar -- fiyat + grid sınırlarını birlikte
+    grafikte göstermek (bkz. app.ui.grid_tab) için; range hesaplaması
+    sırasında zaten çekildiğinden tekrar ağ isteği gerektirmez."""
+
+
 def compute_range_for_symbol(
     symbol: str,
     method: str = DEFAULT_RANGE_METHOD,
     interval: str = DEFAULT_RANGE_INTERVAL,
     lookback_candles: int = DEFAULT_RANGE_LOOKBACK_CANDLES,
     **method_kwargs,
-) -> GridRange:
+) -> RangePreview:
     """Verilen sembol için son `lookback_candles` mumu (`interval` zaman
     diliminde, ör. '4h' veya '1d') çekip seçilen yöntemle (bkz.
     app.grid_trading.range_methods.compute_range) grid üst/alt sınırını
-    hesaplar."""
+    hesaplar. Kullanılan mumları da (grafikte göstermek için) döner."""
     interval_ms = INTERVAL_MS_MAP[interval]
     now_ms = int(time.time() * 1000)
     start_ms = now_ms - lookback_candles * interval_ms
     candles = _fetch_candles(symbol, interval, start_ms, now_ms)
-    return compute_range(method, candles, **method_kwargs)
+    grid_range = compute_range(method, candles, **method_kwargs)
+    return RangePreview(grid_range=grid_range, candles=candles)
 
 
 def run_grid_backtest_for_symbol(

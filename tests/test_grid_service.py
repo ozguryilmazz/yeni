@@ -5,7 +5,6 @@ import pytest
 
 from app.binance_client import INTERVAL_MS_MAP
 from app.grid_trading.grid import GridBacktestResult
-from app.grid_trading.range_methods import GridRange
 from app.grid_trading.service import compute_range_for_symbol, run_grid_backtest_for_symbol
 
 
@@ -40,10 +39,11 @@ def test_compute_range_for_symbol_fetches_lookback_window_and_uppercases_symbol(
     assert args[2] == -120 * interval_ms  # now_ms(0) - lookback*interval_ms
     assert args[3] == 0
 
-    assert isinstance(result, GridRange)
-    assert result.method == "atr"
-    assert result.lower_price == pytest.approx(9.0 - 2 * 2.0)
-    assert result.upper_price == pytest.approx(9.0 + 2 * 2.0)
+    assert result.grid_range.method == "atr"
+    assert result.grid_range.lower_price == pytest.approx(9.0 - 2 * 2.0)
+    assert result.grid_range.upper_price == pytest.approx(9.0 + 2 * 2.0)
+    assert len(result.candles) == len(rows)
+    assert result.candles[-1].close == pytest.approx(9.0)
 
 
 def test_compute_range_for_symbol_raises_when_no_klines_returned():

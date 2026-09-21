@@ -2,9 +2,11 @@ from unittest.mock import patch
 
 from PySide6.QtGui import QGuiApplication
 
+from app.backtest.engine import Candle
 from app.grid_trading.grid import GridBacktestResult, GridFill, GridTrade
 from app.grid_trading.range_methods import GridRange
 from app.grid_trading.screener import CandidateResult
+from app.grid_trading.service import RangePreview
 from app.ui.grid_tab import GridTab
 
 
@@ -135,8 +137,10 @@ def test_method_combo_toggles_param_row_visibility(qapp):
 
 def test_successful_range_computation_fills_bounds_and_passes_method_kwargs(qapp):
     grid_range = GridRange(method="atr", lower_price=85.0, upper_price=115.0, details={"k": 2.5, "period": 10})
+    candles = [Candle(open_time_ms=i * 3_600_000, open=100.0, high=101.0, low=99.0, close=100.0) for i in range(5)]
+    preview = RangePreview(grid_range=grid_range, candles=candles)
 
-    with patch("app.workers.compute_range_for_symbol", return_value=grid_range) as mock_compute:
+    with patch("app.workers.compute_range_for_symbol", return_value=preview) as mock_compute:
         tab = GridTab()
         atr_index = tab.method_combo.findData("atr")
         tab.method_combo.setCurrentIndex(atr_index)
@@ -152,6 +156,22 @@ def test_successful_range_computation_fills_bounds_and_passes_method_kwargs(qapp
     assert "85" in tab.range_result_label.text()
     assert mock_compute.call_args.args[1] == "atr"
     assert mock_compute.call_args.kwargs == {"period": 10, "k": 2.5}
+
+    # Grafik: mum serisi + alt/üst sınır çizgileri (3 seri) çizilmiş olmalı.
+    assert len(tab.range_chart.series()) == 3
+
+
+def test_range_chart_is_cleared_when_computation_returns_no_candles(qapp):
+    grid_range = GridRange(method="atr", lower_price=85.0, upper_price=115.0, details={})
+    preview = RangePreview(grid_range=grid_range, candles=[])
+
+    with patch("app.workers.compute_range_for_symbol", return_value=preview):
+        tab = GridTab()
+        tab._handle_compute_range()
+        tab._range_worker.wait()
+        qapp.processEvents()
+
+    assert tab.range_chart.series() == []
 
 
 def test_range_computation_error_shows_warning(qapp):
