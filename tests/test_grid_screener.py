@@ -57,7 +57,7 @@ def _ranging_moderate_volatility_candles(n: int = 200, seed: int = 7) -> list[Ca
 def test_evaluate_symbol_passes_when_all_criteria_met():
     candles = _ranging_moderate_volatility_candles()
 
-    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 250_000_000.0, candles)
+    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 250_000_000.0, candles, candles)
 
     assert result.passes is True
     assert result.failed_reasons == []
@@ -69,7 +69,7 @@ def test_evaluate_symbol_passes_when_all_criteria_met():
 def test_evaluate_symbol_fails_on_low_spot_volume():
     candles = _ranging_moderate_volatility_candles()
 
-    result = evaluate_symbol("BTCUSDT", 10_000_000.0, 250_000_000.0, candles)
+    result = evaluate_symbol("BTCUSDT", 10_000_000.0, 250_000_000.0, candles, candles)
 
     assert result.passes is False
     assert "spot_volume" in result.failed_reasons
@@ -79,7 +79,7 @@ def test_evaluate_symbol_fails_on_low_spot_volume():
 def test_evaluate_symbol_fails_on_low_futures_volume():
     candles = _ranging_moderate_volatility_candles()
 
-    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 50_000_000.0, candles)
+    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 50_000_000.0, candles, candles)
 
     assert result.passes is False
     assert "futures_volume" in result.failed_reasons
@@ -89,7 +89,7 @@ def test_evaluate_symbol_fails_on_low_futures_volume():
 def test_evaluate_symbol_fails_on_volatility_too_low():
     candles = _flat_low_volatility_candles()
 
-    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 250_000_000.0, candles)
+    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 250_000_000.0, candles, candles)
 
     assert result.passes is False
     assert result.failed_reasons == ["volatility"]
@@ -99,7 +99,7 @@ def test_evaluate_symbol_fails_on_volatility_too_low():
 def test_evaluate_symbol_fails_on_volatility_too_high():
     candles = _choppy_high_volatility_candles()
 
-    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 250_000_000.0, candles)
+    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 250_000_000.0, candles, candles)
 
     assert result.passes is False
     assert result.failed_reasons == ["volatility"]
@@ -111,7 +111,7 @@ def test_evaluate_symbol_fails_on_strong_trend():
     candles = _strong_trend_moderate_volatility_candles()
     criteria = ScreenerCriteria()
 
-    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 250_000_000.0, candles, criteria)
+    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 250_000_000.0, candles, candles, criteria)
 
     assert result.passes is False
     assert result.failed_reasons == ["trend"]
@@ -119,11 +119,25 @@ def test_evaluate_symbol_fails_on_strong_trend():
     assert result.adx_value == pytest.approx(100.0)
 
 
+def test_evaluate_symbol_atr_and_adx_are_computed_from_independent_series():
+    # ATR (günlük kural) düşük volatiliteli bir seriden, ADX ise (4h varsayılan)
+    # güçlü trendli AYRI bir seriden gelsin -- ikisi karıştırılmamalı, her biri
+    # KENDİ serisinden değerlendirilmeli.
+    flat = _flat_low_volatility_candles()
+    trending = _strong_trend_moderate_volatility_candles()
+
+    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 250_000_000.0, flat, trending)
+
+    assert result.adx_value == pytest.approx(100.0)  # trending serisinden
+    assert result.atr_pct < ScreenerCriteria().atr_pct_min  # flat serisinden, çok düşük
+    assert set(result.failed_reasons) == {"volatility", "trend"}
+
+
 def test_evaluate_symbol_volume_failure_does_not_claim_volatility_trend_checked():
     # Hacim zaten elediği ve run_screener bu durumda kline hiç çekmediği için
     # (candles=[]), volatilite/trend 'başarısız' değil 'değerlendirilmedi'
     # sayılmalı -- sadece hacim nedenleri raporlanır.
-    result = evaluate_symbol("BTCUSDT", 1_000_000.0, 1_000_000.0, [])
+    result = evaluate_symbol("BTCUSDT", 1_000_000.0, 1_000_000.0, [], [])
 
     assert result.passes is False
     assert set(result.failed_reasons) == {"spot_volume", "futures_volume"}
@@ -134,7 +148,7 @@ def test_evaluate_symbol_volume_failure_does_not_claim_volatility_trend_checked(
 def test_evaluate_symbol_missing_candle_data_after_volume_pass_fails_volatility_and_trend():
     # Hacim geçti ama (ör. ağ hatasıyla) mum verisi hiç gelmedi -- bu durumda
     # sessizce 'geçti' sayılmamalı, veri eksikliği başarısızlık olarak sayılmalı.
-    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 250_000_000.0, [])
+    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 250_000_000.0, [], [])
 
     assert result.passes is False
     assert set(result.failed_reasons) == {"volatility", "trend"}
@@ -144,7 +158,7 @@ def test_evaluate_symbol_uses_custom_criteria():
     candles = _strong_trend_moderate_volatility_candles()
     lenient = ScreenerCriteria(adx_max=101.0)  # ADX teorik tavanı zaten 100 -> pratikte devre dışı bırakır
 
-    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 250_000_000.0, candles, lenient)
+    result = evaluate_symbol("BTCUSDT", 60_000_000.0, 250_000_000.0, candles, candles, lenient)
 
     assert result.passes is True
 
@@ -174,13 +188,19 @@ def test_run_screener_orchestrates_volume_prefilter_and_candle_fetch(monkeypatch
         lambda: ["AAAUSDT", "BBBUSDT", "CCCUSDT"],
     )
 
+    fetch_calls = []
+
     def fake_fetch(symbols, interval, lookback_candles):
         assert set(symbols) == {"AAAUSDT", "BBBUSDT"}  # CCCUSDT hacimde elendiği için kline istenmemeli
+        fetch_calls.append(interval)
         return {"AAAUSDT": ranging, "BBBUSDT": flat}
 
     monkeypatch.setattr("app.grid_trading.screener._fetch_candles_for_symbols", fake_fetch)
 
     results = run_screener()
+
+    # varsayılanlar farklı (atr='1d', adx='4h') -> İKİ AYRI çekim yapılmalı, sadece bir kez değil.
+    assert sorted(fetch_calls) == ["1d", "4h"]
 
     by_symbol = {r.symbol: r for r in results}
     assert by_symbol["AAAUSDT"].passes is True
@@ -189,3 +209,30 @@ def test_run_screener_orchestrates_volume_prefilter_and_candle_fetch(monkeypatch
     assert by_symbol["CCCUSDT"].passes is False
     assert "futures_volume" in by_symbol["CCCUSDT"].failed_reasons
     assert by_symbol["CCCUSDT"].atr_pct is None  # kline hiç çekilmedi
+
+
+def test_run_screener_reuses_single_fetch_when_atr_and_adx_intervals_match(monkeypatch):
+    ranging = _ranging_moderate_volatility_candles()
+
+    monkeypatch.setattr(
+        "app.grid_trading.screener.get_futures_24h_tickers",
+        lambda: [{"symbol": "AAAUSDT", "quoteVolume": "300000000"}],
+    )
+    monkeypatch.setattr(
+        "app.grid_trading.screener.get_spot_24h_tickers",
+        lambda: [{"symbol": "AAAUSDT", "quoteVolume": "80000000"}],
+    )
+    monkeypatch.setattr("app.grid_trading.screener.get_futures_perpetual_symbols", lambda: ["AAAUSDT"])
+
+    call_count = 0
+
+    def fake_fetch(symbols, interval, lookback_candles):
+        nonlocal call_count
+        call_count += 1
+        return {"AAAUSDT": ranging}
+
+    monkeypatch.setattr("app.grid_trading.screener._fetch_candles_for_symbols", fake_fetch)
+
+    run_screener(adx_interval="1d", atr_interval="1d")
+
+    assert call_count == 1  # aynı zaman dilimiyse veri tekrar çekilmemeli

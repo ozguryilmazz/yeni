@@ -16,6 +16,9 @@ from app.binance_client import (
 )
 
 DEFAULT_ADX_INTERVAL = "4h"
+DEFAULT_ATR_INTERVAL = "1d"
+"""ATR volatilite kuralı kullanıcı notlarında açıkça GÜNLÜK grafikte tanımlı;
+ADX'ten (4h veya 1D, kullanıcı seçimi) BAĞIMSIZ, sabit bir zaman dilimidir."""
 DEFAULT_LOOKBACK_CANDLES = 120
 """ATR(14)/ADX(14) ısınması için yeterden fazla; 4h'de ~20 gün, 1d'de ~4 ay geçmiş."""
 
@@ -61,17 +64,24 @@ def evaluate_symbol(
     symbol: str,
     spot_volume_usd: float | None,
     futures_volume_usd: float | None,
-    candles: list[Candle],
+    daily_candles: list[Candle],
+    adx_candles: list[Candle],
     criteria: ScreenerCriteria | None = None,
 ) -> CandidateResult:
     """Tek bir sembolü kriterlere göre değerlendirir — saf/test edilebilir
     fonksiyon, ağ çağrısı yapmaz.
 
-    `candles`, ATR/ADX'in hesaplanacağı zaman diliminde (ör. 4 saatlik veya
-    günlük) geçmiş mum listesidir; son elemanın kapanışı 'güncel fiyat'
-    kabul edilir. Hacim kriterini geçemeyen semboller için `run_screener`
-    kline verisi hiç çekmez (`candles=[]` geçilir) — bu durumda volatilite/
-    trend kriterleri 'başarısız' değil 'değerlendirilmedi' sayılır, çünkü
+    `daily_candles`: GÜNLÜK mumlar — ATR(14)/fiyat oranı kullanıcı kuralı
+    gereği HER ZAMAN günlük grafikte hesaplanır. `adx_candles`: ADX'in
+    hesaplanacağı zaman diliminde (varsayılan 4 saatlik, bkz.
+    DEFAULT_ADX_INTERVAL) mumlar — `daily_candles`'tan BAĞIMSIZ ayrı bir
+    seridir (ikisini aynı zaman diliminden hesaplamak ATR%'yi olması
+    gerekenden düşük gösterip volatilite kuralını haksız yere elerdi).
+    Son elemanların kapanışı 'güncel fiyat' kabul edilir.
+
+    Hacim kriterini geçemeyen semboller için `run_screener` kline verisi hiç
+    çekmez (`daily_candles`/`adx_candles` boş geçilir) — bu durumda
+    volatilite/trend 'başarısız' değil 'değerlendirilmedi' sayılır, çünkü
     hacim tek başına zaten eler. Hacmi geçip de (ağ hatası gibi bir nedenle)
     verisi eksik kalan semboller ise volatilite/trend'de veri yokluğundan
     başarısız sayılır."""
@@ -84,25 +94,30 @@ def evaluate_symbol(
         reasons.append("spot_volume")
     if not futures_ok:
         reasons.append("futures_volume")
+    volume_ok = spot_ok and futures_ok
 
-    last_price = candles[-1].close if candles else None
-    highs = [c.high for c in candles]
-    lows = [c.low for c in candles]
-    closes = [c.close for c in candles]
+    last_price = daily_candles[-1].close if daily_candles else (adx_candles[-1].close if adx_candles else None)
 
     atr_pct: float | None = None
-    if last_price and len(candles) >= criteria.atr_period + 1:
-        last_atr = atr(highs, lows, closes, criteria.atr_period)[-1]
+    if daily_candles and daily_candles[-1].close and len(daily_candles) >= criteria.atr_period + 1:
+        daily_highs = [c.high for c in daily_candles]
+        daily_lows = [c.low for c in daily_candles]
+        daily_closes = [c.close for c in daily_candles]
+        last_atr = atr(daily_highs, daily_lows, daily_closes, criteria.atr_period)[-1]
         if last_atr is not None:
-            atr_pct = last_atr / last_price
+            atr_pct = last_atr / daily_candles[-1].close
 
     adx_value: float | None = None
-    if len(candles) >= 2 * criteria.adx_period:
-        adx_value = adx(highs, lows, closes, criteria.adx_period)[-1]
+    if len(adx_candles) >= 2 * criteria.adx_period:
+        adx_highs = [c.high for c in adx_candles]
+        adx_lows = [c.low for c in adx_candles]
+        adx_closes = [c.close for c in adx_candles]
+        adx_value = adx(adx_highs, adx_lows, adx_closes, criteria.adx_period)[-1]
 
-    if (spot_ok and futures_ok) or candles:
+    if volume_ok or daily_candles:
         if atr_pct is None or not (criteria.atr_pct_min <= atr_pct <= criteria.atr_pct_max):
             reasons.append("volatility")
+    if volume_ok or adx_candles:
         if adx_value is None or adx_value >= criteria.adx_max:
             reasons.append("trend")
 
@@ -121,6 +136,7 @@ def evaluate_symbol(
 def run_screener(
     criteria: ScreenerCriteria | None = None,
     adx_interval: str = DEFAULT_ADX_INTERVAL,
+    atr_interval: str = DEFAULT_ATR_INTERVAL,
     lookback_candles: int = DEFAULT_LOOKBACK_CANDLES,
 ) -> list[CandidateResult]:
     """Gerçek Binance verisiyle TÜM USDT-M futures sembollerini tarar:
@@ -128,9 +144,11 @@ def run_screener(
     1. TEK istekte futures 24s hacmi ve TEK istekte spot 24s hacmi çekilir
        (get_futures_24h_tickers / get_spot_24h_tickers).
     2. Hacim kriterini geçen semboller için (yüzlerce sembolün tamamına kline
-       çekmemek adına) `adx_interval` zaman diliminde son `lookback_candles`
-       mum, paralel isteklerle (bkz. get_futures_market_overview'daki thread
-       pool örüntüsü) çekilir ve ATR%/ADX hesaplanır.
+       çekmemek adına) İKİ AYRI seri çekilir, paralel isteklerle (bkz.
+       get_futures_market_overview'daki thread pool örüntüsü): ATR% için
+       `atr_interval` (varsayılan günlük), ADX için `adx_interval`
+       (varsayılan 4 saatlik) — ikisi aynıysa (ör. kullanıcı ADX'i de
+       günlükten istiyorsa) tekrar ağ isteği atılmaz, aynı veri paylaşılır.
 
     Sonuç, geçen/geçmeyen TÜM sembolleri (`failed_reasons` ile) içerir —
     listeyi 'sadece uygun olanlar'a indirgemek UI katmanının işidir."""
@@ -146,14 +164,21 @@ def run_screener(
         if futures_volumes.get(symbol, 0.0) >= criteria.min_futures_volume_usd
         and spot_volumes.get(symbol, 0.0) >= criteria.min_spot_volume_usd
     ]
-    candles_by_symbol = _fetch_candles_for_symbols(volume_passed, adx_interval, lookback_candles)
+
+    daily_candles_by_symbol = _fetch_candles_for_symbols(volume_passed, atr_interval, lookback_candles)
+    adx_candles_by_symbol = (
+        daily_candles_by_symbol
+        if adx_interval == atr_interval
+        else _fetch_candles_for_symbols(volume_passed, adx_interval, lookback_candles)
+    )
 
     return [
         evaluate_symbol(
             symbol,
             spot_volumes.get(symbol),
             futures_volumes.get(symbol),
-            candles_by_symbol.get(symbol, []),
+            daily_candles_by_symbol.get(symbol, []),
+            adx_candles_by_symbol.get(symbol, []),
             criteria,
         )
         for symbol in perpetual_symbols
