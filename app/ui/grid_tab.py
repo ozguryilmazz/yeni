@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.backtest.engine import Candle
-from app.grid_trading.grid import DEFAULT_GRID_COUNT, GridBacktestResult
+from app.grid_trading.grid import DEFAULT_GRID_COUNT, GridBacktestResult, build_grid_levels
 from app.grid_trading.range_methods import DEFAULT_RANGE_METHOD, RANGE_METHOD_LABELS, GridRange
 from app.grid_trading.screener import CandidateResult, ScreenerCriteria
 from app.grid_trading.service import (
@@ -39,6 +39,7 @@ from app.grid_trading.service import (
     DEFAULT_GRID_BACKTEST_INTERVAL,
     DEFAULT_RANGE_INTERVAL,
     SUPPORTED_GRID_INTERVALS,
+    BacktestPreview,
     RangePreview,
 )
 from app.ui.market_tab import NumericTableWidgetItem
@@ -388,7 +389,35 @@ class GridTab(QWidget):
         QMessageBox.warning(self, "Aralık hesaplanamadı", message)
 
     def _render_range_chart(self, candles: list[Candle], grid_range: GridRange) -> None:
-        chart = self.range_chart
+        # Aralık önizlemesinde, kullanıcının o an Backtest bölümünde seçili
+        # grid sayısı kadar ARA seviyeyi de ince gri çizgilerle gösteririz --
+        # gerçek backtest'te kullanılacak grid'in bir önizlemesi.
+        grid_count = self.grid_count_input.value()
+        try:
+            grid_levels = build_grid_levels(grid_range.lower_price, grid_range.upper_price, grid_count)
+            inner_levels = grid_levels[1:-1]
+        except ValueError:
+            inner_levels = []
+        self._render_price_chart(
+            self.range_chart,
+            candles,
+            bound_lines=[
+                (grid_range.lower_price, "Alt Sınır", "#1565c0"),
+                (grid_range.upper_price, "Üst Sınır", "#ef6c00"),
+            ],
+            grid_lines=inner_levels,
+        )
+
+    def _render_price_chart(
+        self,
+        chart: QChart,
+        candles: list[Candle],
+        bound_lines: list[tuple[float, str, str]],
+        grid_lines: list[float] | None = None,
+    ) -> None:
+        """Mum grafiği + öne çıkan (kalın/renkli, `bound_lines`) referans
+        çizgileri + istenirse (`grid_lines`) aradaki TÜM grid seviyelerini
+        ince gri çizgilerle çizer."""
         chart.removeAllSeries()
         for axis in chart.axes():
             chart.removeAxis(axis)
@@ -399,13 +428,21 @@ class GridTab(QWidget):
         candle_series.setIncreasingColor(QColor("#2e7d32"))
         candle_series.setDecreasingColor(QColor("#c62828"))
         for candle in candles:
-            candle_series.append(QCandlestickSet(candle.open, candle.high, candle.low, candle.close, float(candle.open_time_ms)))
+            candle_series.append(
+                QCandlestickSet(candle.open, candle.high, candle.low, candle.close, float(candle.open_time_ms))
+            )
         chart.addSeries(candle_series)
+        all_series = [candle_series]
 
-        lower_series = self._make_bound_line("Alt Sınır", candles, grid_range.lower_price, "#1565c0")
-        chart.addSeries(lower_series)
-        upper_series = self._make_bound_line("Üst Sınır", candles, grid_range.upper_price, "#ef6c00")
-        chart.addSeries(upper_series)
+        for level in grid_lines or []:
+            line = self._make_reference_line(None, candles, level, "#bdbdbd", width=1, style=Qt.PenStyle.SolidLine)
+            chart.addSeries(line)
+            all_series.append(line)
+
+        for price, name, color in bound_lines:
+            line = self._make_reference_line(name, candles, price, color, width=2, style=Qt.PenStyle.DashLine)
+            chart.addSeries(line)
+            all_series.append(line)
 
         axis_x = QDateTimeAxis()
         axis_x.setFormat("dd.MM HH:mm")
@@ -415,26 +452,31 @@ class GridTab(QWidget):
         chart.addAxis(axis_x, Qt.AlignmentFlag.AlignBottom)
 
         axis_y = QValueAxis()
-        y_min = min(min(c.low for c in candles), grid_range.lower_price)
-        y_max = max(max(c.high for c in candles), grid_range.upper_price)
+        all_prices = (
+            [c.low for c in candles] + [c.high for c in candles] + [price for price, _, _ in bound_lines] + (grid_lines or [])
+        )
+        y_min, y_max = min(all_prices), max(all_prices)
         padding = (y_max - y_min) * 0.05 if y_max > y_min else max(abs(y_max) * 0.01, 1e-9)
         axis_y.setRange(y_min - padding, y_max + padding)
         chart.addAxis(axis_y, Qt.AlignmentFlag.AlignLeft)
 
-        for series in (candle_series, lower_series, upper_series):
+        for series in all_series:
             series.attachAxis(axis_x)
             series.attachAxis(axis_y)
 
     @staticmethod
-    def _make_bound_line(name: str, candles: list[Candle], price: float, color: str) -> QLineSeries:
+    def _make_reference_line(
+        name: str | None, candles: list[Candle], price: float, color: str, width: int, style: Qt.PenStyle
+    ) -> QLineSeries:
         series = QLineSeries()
-        series.setName(name)
+        if name:
+            series.setName(name)
         series.append(float(candles[0].open_time_ms), price)
         series.append(float(candles[-1].open_time_ms), price)
         pen = series.pen()
         pen.setColor(QColor(color))
-        pen.setStyle(Qt.PenStyle.DashLine)
-        pen.setWidth(2)
+        pen.setStyle(style)
+        pen.setWidth(width)
         series.setPen(pen)
         return series
 
@@ -503,10 +545,15 @@ class GridTab(QWidget):
 
         hint = QLabel(
             "Sabit sermaye grid sayısına eşit bölünüp ilk mumun açılışına göre sabit bir "
-            "miktara çevrilir; her hücre AL+SAT tamamlandığında yeniden kurulur. Fiyat "
-            "aralığın dışına çıkarsa o yöndeki emirler tükenir (stop-loss YOK) — kalan "
-            "envanter/nakit sadece mark-to-market izlenir. Bu sekme sadece geçmiş veri "
-            "üzerinde simülasyon yapar, gerçek işlem açmaz."
+            "miktara çevrilir. Başlangıç fiyatının ALTINDAKİ seviyelere AL emri konur; "
+            "ÜSTÜNDEKİ seviyeler için ise (gerçek grid botlarında olduğu gibi) kurulumda "
+            "PİYASADAN envanter alınıp hemen SAT emri konur — aksi halde fiyat aralığın "
+            "tamamen dışında başlarsa (ör. aralık güncel fiyata göre hesaplanıp backtest "
+            "geçmişe dönük çalıştırıldığında) hiç emir kurulamaz ve hiç işlem gerçekleşmez. "
+            "Her hücre AL+SAT tamamlandığında yeniden kurulur. Fiyat aralığın dışına çıkarsa "
+            "o yöndeki emirler tükenir (stop-loss YOK) — kalan envanter/nakit sadece "
+            "mark-to-market izlenir. Bu sekme sadece geçmiş veri üzerinde simülasyon yapar, "
+            "gerçek işlem açmaz."
         )
         hint.setWordWrap(True)
         section.addWidget(hint)
@@ -514,6 +561,12 @@ class GridTab(QWidget):
         self.backtest_summary_label = QLabel("—")
         self.backtest_summary_label.setWordWrap(True)
         section.addWidget(self.backtest_summary_label)
+
+        self.backtest_chart = QChart()
+        self.backtest_chart.legend().hide()
+        self.backtest_chart_view = QChartView(self.backtest_chart)
+        self.backtest_chart_view.setFixedHeight(320)
+        section.addWidget(self.backtest_chart_view)
 
         self.grid_trade_table = QTableWidget(0, 6)
         self.grid_trade_table.setHorizontalHeaderLabels(
@@ -557,17 +610,30 @@ class GridTab(QWidget):
         self._backtest_worker.error.connect(self._on_backtest_error)
         self._backtest_worker.start()
 
-    def _on_backtest_finished(self, result: GridBacktestResult) -> None:
+    def _on_backtest_finished(self, preview: BacktestPreview) -> None:
         self.run_backtest_button.setEnabled(True)
-        self._backtest_result = result
-        self._render_backtest_summary(result)
-        self._render_grid_trades(result)
+        self._backtest_result = preview.result
+        self._render_backtest_summary(preview.result)
+        self._render_grid_trades(preview.result)
+        self._render_backtest_chart(preview.candles, preview.result)
 
     def _on_backtest_error(self, message: str) -> None:
         self.run_backtest_button.setEnabled(True)
         self._backtest_result = None
         self.backtest_summary_label.setText("—")
         QMessageBox.warning(self, "Grid backtest çalıştırılamadı", message)
+
+    def _render_backtest_chart(self, candles: list[Candle], result: GridBacktestResult) -> None:
+        inner_levels = result.grid_levels[1:-1]
+        self._render_price_chart(
+            self.backtest_chart,
+            candles,
+            bound_lines=[
+                (result.grid_levels[0], "Alt Sınır", "#1565c0"),
+                (result.grid_levels[-1], "Üst Sınır", "#ef6c00"),
+            ],
+            grid_lines=inner_levels,
+        )
 
     def _render_backtest_summary(self, result: GridBacktestResult) -> None:
         pnl_color = "#2e7d32" if result.total_pnl_usd >= 0 else "#c62828"

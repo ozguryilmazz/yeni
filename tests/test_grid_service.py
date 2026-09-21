@@ -4,7 +4,6 @@ from unittest.mock import patch
 import pytest
 
 from app.binance_client import INTERVAL_MS_MAP
-from app.grid_trading.grid import GridBacktestResult
 from app.grid_trading.service import compute_range_for_symbol, run_grid_backtest_for_symbol
 
 
@@ -75,9 +74,9 @@ def test_run_grid_backtest_for_symbol_fetches_requested_window_and_uppercases_sy
     assert args[2] == start_ms
     assert args[3] == end_ms
 
-    assert isinstance(result, GridBacktestResult)
-    assert result.qty_per_grid == pytest.approx((400.0 / 4) / 100.0)
-    assert result.trades == []  # fiyat hiçbir grid seviyesine değmedi
+    assert result.result.qty_per_grid == pytest.approx((400.0 / 4) / 100.0)
+    assert result.result.trades == []  # fiyat hiçbir grid seviyesine değmedi
+    assert len(result.candles) == len(rows)
 
 
 def test_run_grid_backtest_for_symbol_raises_when_start_is_not_before_end():

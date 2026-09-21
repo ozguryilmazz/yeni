@@ -61,6 +61,15 @@ def compute_range_for_symbol(
     return RangePreview(grid_range=grid_range, candles=candles)
 
 
+@dataclass
+class BacktestPreview:
+    result: GridBacktestResult
+    candles: list[Candle]
+    """Backtest'in çalıştığı mumlar -- fiyat + grid seviyelerini birlikte
+    grafikte göstermek (bkz. app.ui.grid_tab) için; backtest sırasında
+    zaten çekildiğinden tekrar ağ isteği gerektirmez."""
+
+
 def run_grid_backtest_for_symbol(
     symbol: str,
     start: datetime,
@@ -70,16 +79,18 @@ def run_grid_backtest_for_symbol(
     upper_price: float,
     grid_count: int = DEFAULT_GRID_COUNT,
     capital_usd: float = DEFAULT_CAPITAL_USD,
-) -> GridBacktestResult:
+) -> BacktestPreview:
     """Verilen sembol/tarih aralığı/zaman diliminde geçmiş mum verisini çekip
     grid backtest simülasyonunu çalıştırır (bkz.
     app.grid_trading.grid.run_grid_backtest). Yön stratejilerinin aksine
     indikatör ısınması gerekmez -- grid sınırları ayrıca (bkz.
-    compute_range_for_symbol) belirlenip buraya hazır verilir."""
+    compute_range_for_symbol) belirlenip buraya hazır verilir. Kullanılan
+    mumları da (grafikte göstermek için) döner."""
     start_ms = int(start.timestamp() * 1000)
     end_ms = int(end.timestamp() * 1000)
     if start_ms >= end_ms:
         raise ValueError("Başlangıç tarihi bitiş tarihinden önce olmalı")
 
     candles = _fetch_candles(symbol, interval, start_ms, end_ms)
-    return run_grid_backtest(candles, lower_price, upper_price, grid_count, capital_usd)
+    result = run_grid_backtest(candles, lower_price, upper_price, grid_count, capital_usd)
+    return BacktestPreview(result=result, candles=candles)

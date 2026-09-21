@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 from app.backtest.engine import Candle
-from app.position_sizing import MAKER_FEE_RATE
+from app.position_sizing import MAKER_FEE_RATE, TAKER_FEE_RATE
 
 DEFAULT_GRID_COUNT = 30
 """Kullanıcı notlarındaki varsayılan: alt/üst sınır arasında 30 eşit parça.
@@ -29,6 +29,10 @@ class GridFill:
     time_ms: int
     price: float
     quantity: float
+    fee_rate: float
+    """Bu dolumda uygulanan komisyon oranı -- kurulumda seed edilen (piyasadan
+    alınan) SAT'lara karşılık gelen AL'lar taker, geri kalan tüm dolumlar
+    (resting limit emri olarak dolduklarından) maker oranı kullanır."""
 
 
 @dataclass
@@ -82,6 +86,7 @@ def run_grid_backtest(
     grid_count: int,
     capital_usd: float,
     maker_fee_rate: float = MAKER_FEE_RATE,
+    taker_fee_rate: float = TAKER_FEE_RATE,
 ) -> GridBacktestResult:
     """Verilen mum dizisi üzerinde bir arithmetic grid'in AL/SAT dolumlarını
     simüle eder.
@@ -89,13 +94,21 @@ def run_grid_backtest(
     Kurulum: `capital_usd`, `grid_count`'a eşit bölünüp ilk mumun açılışına
     göre SABİT bir taban varlık miktarına (`qty_per_grid`) çevrilir — gerçek
     bir grid botu da kurulumda sabit bir miktar belirler, işlem sırasında
-    yeniden hesaplamaz. Başlangıçta mevcut fiyatın ALTINDAKİ her seviyede
-    bekleyen bir AL emri vardır (yeterli nakit varsayılır); ÜSTÜNDEKİ
-    seviyelerde henüz envanter olmadığından SAT emri yoktur — sıfır
-    envanterle başlayan standart 'nötr/long-only' grid davranışı. Bir AL
-    dolunca bir üst seviyeye SAT emri konur; o SAT da dolunca kâr
-    gerçekleşir ve AYNI alt seviyeye AL emri yeniden kurulur (hücre tekrar
-    çalışabilir hale gelir).
+    yeniden hesaplamaz. Başlangıç fiyatının ALTINDAKİ her seviyede bekleyen
+    bir AL (limit, maker) emri vardır. ÜSTÜNDEKİ seviyeler için ise gerçek
+    grid botlarının (ör. Binance Nötr Grid) yaptığı gibi kurulumda PİYASADAN
+    (taker) o seviyeler kadar envanter alınmış kabul edilip oraya hemen bir
+    SAT emri konur — aksi halde fiyat aralığın tamamının ALTINDA başlarsa
+    (grid'in tüm seviyeleri > başlangıç fiyatı) hiç AL emri kurulamaz ve
+    envanter de olmadığından hiçbir SAT emri de oluşamaz; grid tamamen boş
+    kalır ve fiyat ne kadar dalgalanırsa dalgalansın hiçbir işlem gerçekleşmez.
+    (Başlangıç fiyatına TAM eşit bir seviye varsa o seviyeye ne AL ne SAT
+    konur — sınırda anlamsız bir 'anlık wash' işlemi önlenir.)
+
+    Bir AL dolunca bir üst seviyeye SAT emri konur (maker); o SAT da dolunca
+    kâr/zarar gerçekleşir ve BİR ALT seviyeye AL emri yeniden kurulur (hücre
+    tekrar çalışabilir hale gelir) — bu, kurulumda seed edilmiş bir SAT için
+    de geçerlidir (satıldıktan sonra bir alt seviyeden yeniden alım bekler).
 
     Fiyat aralığın dışına çıkarsa (breached_lower/breached_upper) o yöndeki
     emirler tükenir ve motor kendiliğinden yeni emir açmaz — kalan envanter
@@ -114,14 +127,29 @@ def run_grid_backtest(
 
     levels = build_grid_levels(lower_price, upper_price, grid_count)
     start_price = candles[0].open
+    start_time_ms = candles[0].open_time_ms
     qty_per_grid = (capital_usd / grid_count) / start_price
 
-    pending_buys: set[int] = {i for i, level in enumerate(levels) if level < start_price}
-    pending_sells: dict[int, tuple[int, int]] = {}  # sell_level_index -> (buy_level_index, buy_time_ms)
-
-    trades: list[GridTrade] = []
+    pending_buys: set[int] = set()
+    # sell_level_index -> (buy_price, buy_time_ms, o alışa uygulanan komisyon oranı)
+    pending_sells: dict[int, tuple[float, int, float]] = {}
     fills: list[GridFill] = []
     fees_usd = 0.0
+
+    for i, level in enumerate(levels):
+        if level < start_price:
+            pending_buys.add(i)
+        elif level > start_price:
+            seed_fee = start_price * qty_per_grid * taker_fee_rate
+            fees_usd += seed_fee
+            pending_sells[i] = (start_price, start_time_ms, taker_fee_rate)
+            fills.append(
+                GridFill(
+                    side="BUY", time_ms=start_time_ms, price=start_price, quantity=qty_per_grid, fee_rate=taker_fee_rate
+                )
+            )
+
+    trades: list[GridTrade] = []
     min_price_seen = start_price
     max_price_seen = start_price
 
@@ -137,7 +165,7 @@ def run_grid_backtest(
 
     final_inventory_qty = len(pending_sells) * qty_per_grid
     cost_basis_usd = sum(
-        levels[buy_index] * qty_per_grid * (1 + maker_fee_rate) for buy_index, _ in pending_sells.values()
+        buy_price * qty_per_grid * (1 + buy_fee_rate) for buy_price, _, buy_fee_rate in pending_sells.values()
     )
     final_inventory_value_usd = final_inventory_qty * end_price
     unrealized_pnl_usd = final_inventory_value_usd - cost_basis_usd
@@ -169,7 +197,7 @@ def _process_candle(
     candle: Candle,
     levels: list[float],
     pending_buys: set[int],
-    pending_sells: dict[int, tuple[int, int]],
+    pending_sells: dict[int, tuple[float, int, float]],
     qty_per_grid: float,
     fee_rate: float,
     trades: list[GridTrade],
@@ -194,7 +222,7 @@ def _sweep(
     candle: Candle,
     levels: list[float],
     pending_buys: set[int],
-    pending_sells: dict[int, tuple[int, int]],
+    pending_sells: dict[int, tuple[float, int, float]],
     qty_per_grid: float,
     fee_rate: float,
     trades: list[GridTrade],
@@ -239,7 +267,7 @@ def _fill_buy(
     candle: Candle,
     levels: list[float],
     pending_buys: set[int],
-    pending_sells: dict[int, tuple[int, int]],
+    pending_sells: dict[int, tuple[float, int, float]],
     qty_per_grid: float,
     fee_rate: float,
     fills: list[GridFill],
@@ -247,9 +275,9 @@ def _fill_buy(
     price = levels[index]
     fee = price * qty_per_grid * fee_rate
     pending_buys.discard(index)
-    fills.append(GridFill(side="BUY", time_ms=candle.open_time_ms, price=price, quantity=qty_per_grid))
+    fills.append(GridFill(side="BUY", time_ms=candle.open_time_ms, price=price, quantity=qty_per_grid, fee_rate=fee_rate))
     if index + 1 < len(levels):
-        pending_sells[index + 1] = (index, candle.open_time_ms)
+        pending_sells[index + 1] = (price, candle.open_time_ms, fee_rate)
     return fee
 
 
@@ -258,22 +286,23 @@ def _fill_sell(
     candle: Candle,
     levels: list[float],
     pending_buys: set[int],
-    pending_sells: dict[int, tuple[int, int]],
+    pending_sells: dict[int, tuple[float, int, float]],
     qty_per_grid: float,
     fee_rate: float,
     trades: list[GridTrade],
     fills: list[GridFill],
 ) -> float:
-    buy_index, buy_time_ms = pending_sells.pop(index)
-    buy_price = levels[buy_index]
+    buy_price, buy_time_ms, buy_fee_rate = pending_sells.pop(index)
     sell_price = levels[index]
 
     sell_fee = sell_price * qty_per_grid * fee_rate
-    buy_fee = buy_price * qty_per_grid * fee_rate
+    buy_fee = buy_price * qty_per_grid * buy_fee_rate
     gross_pnl = (sell_price - buy_price) * qty_per_grid
     net_pnl = gross_pnl - sell_fee - buy_fee
 
-    fills.append(GridFill(side="SELL", time_ms=candle.open_time_ms, price=sell_price, quantity=qty_per_grid))
+    fills.append(
+        GridFill(side="SELL", time_ms=candle.open_time_ms, price=sell_price, quantity=qty_per_grid, fee_rate=fee_rate)
+    )
     trades.append(
         GridTrade(
             buy_price=buy_price,
@@ -286,5 +315,6 @@ def _fill_sell(
             net_pnl_usd=net_pnl,
         )
     )
-    pending_buys.add(buy_index)  # hücreyi yeniden kur: fiyat tekrar buy_price'a inerse aynı hücre tekrar çalışsın
+    if index > 0:  # seviye 0'ın altı yok -- kurulumda seed edilmiş bir SAT ise buy_index kavramı yoktur
+        pending_buys.add(index - 1)  # hücreyi yeniden kur: fiyat bir alt seviyeye inerse tekrar çalışsın
     return sell_fee

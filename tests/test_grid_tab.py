@@ -6,7 +6,7 @@ from app.backtest.engine import Candle
 from app.grid_trading.grid import GridBacktestResult, GridFill, GridTrade
 from app.grid_trading.range_methods import GridRange
 from app.grid_trading.screener import CandidateResult
-from app.grid_trading.service import RangePreview
+from app.grid_trading.service import BacktestPreview, RangePreview
 from app.ui.grid_tab import GridTab
 
 
@@ -30,7 +30,7 @@ def _grid_backtest_result(trades: list[GridTrade] | None = None) -> GridBacktest
     return GridBacktestResult(
         grid_levels=[90.0, 95.0, 100.0, 105.0, 110.0],
         trades=trades,
-        fills=[GridFill(side="BUY", time_ms=0, price=90.0, quantity=1.0)],
+        fills=[GridFill(side="BUY", time_ms=0, price=90.0, quantity=1.0, fee_rate=0.0002)],
         realized_pnl_usd=sum(t.net_pnl_usd for t in trades),
         unrealized_pnl_usd=-1.5,
         total_pnl_usd=sum(t.net_pnl_usd for t in trades) - 1.5,
@@ -48,6 +48,10 @@ def _grid_backtest_result(trades: list[GridTrade] | None = None) -> GridBacktest
         open_buy_levels=[],
         open_sell_levels=[95.0],
     )
+
+
+def _backtest_candles(n: int = 5) -> list[Candle]:
+    return [Candle(open_time_ms=i * 3_600_000, open=95.0, high=101.0, low=89.0, close=95.0) for i in range(n)]
 
 
 # ---- Tarama ------------------------------------------------------------
@@ -157,8 +161,10 @@ def test_successful_range_computation_fills_bounds_and_passes_method_kwargs(qapp
     assert mock_compute.call_args.args[1] == "atr"
     assert mock_compute.call_args.kwargs == {"period": 10, "k": 2.5}
 
-    # Grafik: mum serisi + alt/üst sınır çizgileri (3 seri) çizilmiş olmalı.
-    assert len(tab.range_chart.series()) == 3
+    # Grafik: mum serisi + ara grid çizgileri (varsayılan grid sayısı - 1) +
+    # alt/üst sınır çizgileri (2) çizilmiş olmalı.
+    expected_series_count = 1 + (tab.grid_count_input.value() - 1) + 2
+    assert len(tab.range_chart.series()) == expected_series_count
 
 
 def test_range_chart_is_cleared_when_computation_returns_no_candles(qapp):
@@ -222,7 +228,7 @@ def test_run_backtest_warns_when_start_is_not_before_end(qapp):
     assert tab._backtest_worker is None
 
 
-def test_successful_backtest_renders_summary_and_trade_table(qapp):
+def test_successful_backtest_renders_summary_trade_table_and_chart(qapp):
     trade = GridTrade(
         buy_price=90.0,
         sell_price=95.0,
@@ -234,8 +240,9 @@ def test_successful_backtest_renders_summary_and_trade_table(qapp):
         net_pnl_usd=4.963,
     )
     result = _grid_backtest_result(trades=[trade])
+    preview = BacktestPreview(result=result, candles=_backtest_candles())
 
-    with patch("app.workers.run_grid_backtest_for_symbol", return_value=result):
+    with patch("app.workers.run_grid_backtest_for_symbol", return_value=preview):
         tab = GridTab()
         tab._handle_run_backtest()
         tab._backtest_worker.wait()
@@ -247,6 +254,10 @@ def test_successful_backtest_renders_summary_and_trade_table(qapp):
     assert "ÜST sınırın üstüne çıktı" not in tab.backtest_summary_label.text()
     assert tab.grid_trade_table.rowCount() == 1
     assert tab.grid_trade_table.item(0, 1).text() == "90.000000"
+
+    # Grafik: mum serisi + 2 ara grid seviyesi (95,100,105 hariç uç ikisi) +
+    # alt/üst sınır çizgileri (2) -- result.grid_levels=[90,95,100,105,110].
+    assert len(tab.backtest_chart.series()) == 1 + 3 + 2
 
 
 def test_backtest_error_shows_warning_and_reenables_button(qapp):

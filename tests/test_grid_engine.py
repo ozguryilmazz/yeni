@@ -4,6 +4,7 @@ import pytest
 
 from app.backtest.engine import Candle
 from app.grid_trading.grid import build_grid_levels, run_grid_backtest
+from app.position_sizing import MAKER_FEE_RATE, TAKER_FEE_RATE
 
 
 def _candle(open_time_ms: int, open_: float, high: float, low: float, close: float) -> Candle:
@@ -36,51 +37,58 @@ def test_run_grid_backtest_rejects_non_positive_capital():
         run_grid_backtest(candles, 90.0, 110.0, grid_count=4, capital_usd=0.0)
 
 
-def test_run_grid_backtest_no_fills_when_price_stays_between_levels():
-    # levels = [90, 95, 100, 105, 110]; start_price=100 -> bekleyen AL: 90 ve 95.
-    # Mum hiçbir seviyeye değmiyor -> hiçbir emir dolmamalı.
+def test_run_grid_backtest_seeds_sells_above_start_price_at_setup():
+    # levels = [90, 95, 100, 105, 110]; start_price=100 -> 90/95 AL (<100),
+    # 105/110 kurulumda SAT olarak seed edilir (>100, start_price'tan 'piyasadan'
+    # alınmış kabul edilir -- gerçek nötr grid botlarının yaptığı gibi); 100
+    # start_price'a TAM eşit olduğundan ne AL ne SAT alır (sınırda anlamsız bir
+    # anlık wash önlenir). Mum hiçbir seviyeye değmiyor -> ek dolum olmamalı.
     candles = [_candle(0, 100.0, 100.5, 99.5, 100.2)]
 
     result = run_grid_backtest(candles, 90.0, 110.0, grid_count=4, capital_usd=400.0)
 
     assert result.trades == []
-    assert result.fills == []
-    assert result.fees_usd == pytest.approx(0.0)
+    assert len(result.fills) == 2  # sadece kurulumdaki 2 seed AL'ı (105 ve 110 için)
+    assert all(f.side == "BUY" and f.price == pytest.approx(100.0) for f in result.fills)
+    assert result.fees_usd == pytest.approx(2 * 100.0 * 1.0 * TAKER_FEE_RATE)
     assert result.open_buy_levels == pytest.approx([90.0, 95.0])
-    assert result.open_sell_levels == []
+    assert result.open_sell_levels == pytest.approx([105.0, 110.0])
 
 
-def test_run_grid_backtest_completes_two_round_trips_and_rearms_cells():
+def test_run_grid_backtest_seeded_upper_cells_also_complete_round_trips():
     # levels = [90, 95, 100, 105, 110] (grid_count=4); start_price=100 ->
-    # bekleyen AL: 90 ve 95. capital_usd=400 -> qty_per_grid = (400/4)/100 = 1.0.
+    # bekleyen AL: 90 ve 95; SAT (seed, buy_price=100): 105 ve 110.
+    # capital_usd=400 -> qty_per_grid = (400/4)/100 = 1.0.
     #
-    # Mum 1 (bearish, 100 -> 90): 95'teki ve 90'daki AL emirleri dolar (100'e
-    # SAT emri hiç yok çünkü kurulumda üst seviyelere emir konmaz).
-    # Mum 2 (bullish, 90 -> 110): 95'teki ve 100'deki (mum 1'de kurulan) SAT
-    # emirleri dolar -> iki tamamlanmış işlem (90->95 ve 95->100); 105/110'da
-    # hiç emir olmadığından (hiçbir şey oraya kadar alınmadı) orada dolum olmaz.
+    # Mum 1 (bearish, 100 -> 90): 95'teki ve 90'daki AL emirleri dolar, 100 ve
+    # 95'e yeni SAT emirleri kurulur.
+    # Mum 2 (bullish, 90 -> 110): SIRAYLA 95, 100, 105, 110'daki SAT emirlerinin
+    # HEPSİ dolar -> DÖRT tamamlanmış işlem (90->95, 95->100, ve kurulumda seed
+    # edilmiş 100->105, 100->110).
     candle1 = _candle(0, 100.0, 100.0, 90.0, 90.0)
     candle2 = _candle(60_000, 90.0, 110.0, 90.0, 110.0)
 
     result = run_grid_backtest([candle1, candle2], 90.0, 110.0, grid_count=4, capital_usd=400.0)
 
     assert result.qty_per_grid == pytest.approx(1.0)
-    assert len(result.trades) == 2
+    assert len(result.trades) == 4
 
-    first, second = result.trades
-    assert (first.buy_price, first.sell_price) == pytest.approx((90.0, 95.0))
-    assert (second.buy_price, second.sell_price) == pytest.approx((95.0, 100.0))
-    assert first.net_pnl_usd == pytest.approx(5.0 - 90 * 1.0 * 0.0002 - 95 * 1.0 * 0.0002)
-    assert second.net_pnl_usd == pytest.approx(5.0 - 95 * 1.0 * 0.0002 - 100 * 1.0 * 0.0002)
+    pairs = [(t.buy_price, t.sell_price) for t in result.trades]
+    assert pairs == pytest.approx([(90.0, 95.0), (95.0, 100.0), (100.0, 105.0), (100.0, 110.0)])
 
-    assert result.realized_pnl_usd == pytest.approx(first.net_pnl_usd + second.net_pnl_usd)
+    # İlk iki işlem sıradan (maker+maker) dolumlardan, son iki işlem kurulumda
+    # seed edilmiş (taker AL + maker SAT) envanterden geliyor -- komisyonları farklı.
+    assert result.trades[0].fees_usd == pytest.approx(90 * MAKER_FEE_RATE + 95 * MAKER_FEE_RATE)
+    assert result.trades[2].fees_usd == pytest.approx(100 * TAKER_FEE_RATE + 105 * MAKER_FEE_RATE)
+
+    assert result.realized_pnl_usd == pytest.approx(sum(t.net_pnl_usd for t in result.trades))
     assert result.fees_usd == pytest.approx(sum(t.fees_usd for t in result.trades))
     assert result.final_inventory_qty == pytest.approx(0.0)
     assert result.unrealized_pnl_usd == pytest.approx(0.0)
     assert result.total_pnl_usd == pytest.approx(result.realized_pnl_usd)
 
-    # İki hücre de yeniden kuruldu (tekrar en alta indiği takdirde tekrar çalışabilir).
-    assert result.open_buy_levels == pytest.approx([90.0, 95.0])
+    # Dört hücre de yeniden kuruldu (tekrar bir alt seviyeye inerse tekrar çalışabilir).
+    assert result.open_buy_levels == pytest.approx([90.0, 95.0, 100.0, 105.0])
     assert result.open_sell_levels == []
 
     assert result.min_price_seen == pytest.approx(90.0)
@@ -90,23 +98,49 @@ def test_run_grid_backtest_completes_two_round_trips_and_rearms_cells():
 
 
 def test_run_grid_backtest_tracks_unrealized_loss_when_price_breaches_lower_and_stays():
-    # Fiyat gridin tamamını aşağı kırıp geri dönmüyor -> alınan envanter satılamıyor,
+    # Fiyat gridin tamamını aşağı kırıp geri dönmüyor -> hem baştaki AL'lardan
+    # (90, 95) hem de seed edilmiş SAT'ların yeniden kurulmuş hallerinden değil,
+    # SADECE gerçek AL dolumlarından (90, 95) gelen envanter satılamıyor; seed
+    # edilmiş SAT'lar (105, 110) hiç dolmadığı için hâlâ bekliyor. Toplamda 4
+    # açık SAT pozisyonu (90->95 bekliyor, 95->100 bekliyor, + 2 seed) var --
     # mark-to-market bir kayıp olarak izlenmeli (stop-loss YOK, bu grid'in doğası).
     candle = _candle(0, 100.0, 100.0, 80.0, 80.0)
 
     result = run_grid_backtest([candle], 90.0, 110.0, grid_count=4, capital_usd=400.0)
 
     assert result.trades == []  # hiçbir SAT dolmadı, henüz gerçekleşmiş K/Z yok
-    assert result.final_inventory_qty == pytest.approx(2.0)  # 90 ve 95'teki AL'lar doldu
+    assert result.final_inventory_qty == pytest.approx(4.0)
     assert result.breached_lower is True
     assert result.breached_upper is False
 
-    cost_basis = (90.0 * 1.0002) + (95.0 * 1.0002)
-    expected_unrealized = 2.0 * 80.0 - cost_basis
+    cost_basis = (90.0 * (1 + MAKER_FEE_RATE)) + (95.0 * (1 + MAKER_FEE_RATE)) + 2 * (100.0 * (1 + TAKER_FEE_RATE))
+    expected_unrealized = 4.0 * 80.0 - cost_basis
     assert result.unrealized_pnl_usd == pytest.approx(expected_unrealized)
     assert result.total_pnl_usd == pytest.approx(expected_unrealized)
     assert result.open_buy_levels == []
-    assert result.open_sell_levels == pytest.approx([95.0, 100.0])
+    assert result.open_sell_levels == pytest.approx([95.0, 100.0, 105.0, 110.0])
+
+
+def test_run_grid_backtest_still_trades_when_price_starts_entirely_below_range():
+    # Gerçek bug raporu: aralık hesaplaması (ör. Bollinger/destek-direnç) güncel
+    # fiyata göre yapılır ama backtest GEÇMİŞE dönük bir pencerede çalışır --
+    # o pencerenin başında fiyat aralığın tamamen ALTINDA olabilir. Eskiden bu
+    # durumda hiç AL emri kurulamıyordu (hepsi >= start_price) ve envanter de
+    # olmadığından hiç SAT emri de oluşamıyordu -> grid tamamen boş kalıp fiyat
+    # ne kadar dalgalanırsa dalgalansın SIFIR işlem oluyordu. Artık üst yarı
+    # kurulumda seed ediliyor, bu yüzden fiyat aralığa girip normal şekilde
+    # dalgalandığında işlem gerçekleşmeli.
+    levels_range = (90.0, 110.0)
+    candles = [
+        _candle(0, 70.0, 71.0, 69.0, 70.0),  # aralığın tamamen altında başlıyor
+        _candle(60_000, 70.0, 115.0, 70.0, 100.0),  # aralığın tamamına yükseliyor
+        _candle(120_000, 100.0, 105.0, 95.0, 98.0),
+    ]
+
+    result = run_grid_backtest(candles, *levels_range, grid_count=4, capital_usd=400.0)
+
+    assert len(result.fills) > 0
+    assert len(result.trades) > 0  # eskiden burada her zaman sıfır işlem olurdu
 
 
 def test_run_grid_backtest_bookkeeping_is_internally_consistent_over_a_long_random_walk():
@@ -139,7 +173,7 @@ def test_run_grid_backtest_bookkeeping_is_internally_consistent_over_a_long_rand
     assert result.final_inventory_qty == pytest.approx((len(buy_fills) - len(sell_fills)) * result.qty_per_grid)
     assert result.final_inventory_qty >= 0.0
 
-    recomputed_fees = sum(f.price * f.quantity * 0.0002 for f in result.fills)
+    recomputed_fees = sum(f.price * f.quantity * f.fee_rate for f in result.fills)
     assert result.fees_usd == pytest.approx(recomputed_fees)
     assert result.realized_pnl_usd == pytest.approx(sum(t.net_pnl_usd for t in result.trades))
 
