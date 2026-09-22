@@ -4,7 +4,7 @@ import pytest
 
 from app.backtest.engine import Candle
 from app.grid_trading.grid import build_grid_levels, run_grid_backtest
-from app.position_sizing import MAKER_FEE_RATE, TAKER_FEE_RATE
+from app.position_sizing import TAKER_FEE_RATE
 
 
 def _candle(open_time_ms: int, open_: float, high: float, low: float, close: float) -> Candle:
@@ -35,6 +35,30 @@ def test_run_grid_backtest_rejects_non_positive_capital():
     candles = [_candle(0, 100.0, 100.0, 100.0, 100.0)]
     with pytest.raises(ValueError):
         run_grid_backtest(candles, 90.0, 110.0, grid_count=4, capital_usd=0.0)
+
+
+def test_run_grid_backtest_rejects_non_positive_leverage():
+    candles = [_candle(0, 100.0, 100.0, 100.0, 100.0)]
+    with pytest.raises(ValueError):
+        run_grid_backtest(candles, 90.0, 110.0, grid_count=4, capital_usd=400.0, leverage=0.0)
+
+
+def test_run_grid_backtest_leverage_scales_quantity_pnl_and_fees():
+    # Aynı iki mumluk senaryo (bkz. test_run_grid_backtest_seeded_upper_cells_also_
+    # complete_round_trips) ama leverage=5 ile -- qty_per_grid, gerçekleşen K/Z ve
+    # komisyonların TAMAMI kaldıraçsız hale göre TAM 5 katı olmalı (aynı % fiyat
+    # hareketleri, sadece nominal büyüklük ölçekleniyor).
+    candle1 = _candle(0, 100.0, 100.0, 90.0, 90.0)
+    candle2 = _candle(60_000, 90.0, 110.0, 90.0, 110.0)
+
+    unleveraged = run_grid_backtest([candle1, candle2], 90.0, 110.0, grid_count=4, capital_usd=400.0, leverage=1.0)
+    leveraged = run_grid_backtest([candle1, candle2], 90.0, 110.0, grid_count=4, capital_usd=400.0, leverage=5.0)
+
+    assert leveraged.leverage == pytest.approx(5.0)
+    assert leveraged.qty_per_grid == pytest.approx(unleveraged.qty_per_grid * 5)
+    assert leveraged.realized_pnl_usd == pytest.approx(unleveraged.realized_pnl_usd * 5)
+    assert leveraged.fees_usd == pytest.approx(unleveraged.fees_usd * 5)
+    assert len(leveraged.trades) == len(unleveraged.trades)
 
 
 def test_run_grid_backtest_seeds_sells_above_start_price_at_setup():
@@ -76,10 +100,9 @@ def test_run_grid_backtest_seeded_upper_cells_also_complete_round_trips():
     pairs = [(t.buy_price, t.sell_price) for t in result.trades]
     assert pairs == pytest.approx([(90.0, 95.0), (95.0, 100.0), (100.0, 105.0), (100.0, 110.0)])
 
-    # İlk iki işlem sıradan (maker+maker) dolumlardan, son iki işlem kurulumda
-    # seed edilmiş (taker AL + maker SAT) envanterden geliyor -- komisyonları farklı.
-    assert result.trades[0].fees_usd == pytest.approx(90 * MAKER_FEE_RATE + 95 * MAKER_FEE_RATE)
-    assert result.trades[2].fees_usd == pytest.approx(100 * TAKER_FEE_RATE + 105 * MAKER_FEE_RATE)
+    # TÜM dolumlarda (kurulum seed'i dahil) tek tip (varsayılan taker) oran uygulanır.
+    assert result.trades[0].fees_usd == pytest.approx(90 * TAKER_FEE_RATE + 95 * TAKER_FEE_RATE)
+    assert result.trades[2].fees_usd == pytest.approx(100 * TAKER_FEE_RATE + 105 * TAKER_FEE_RATE)
 
     assert result.realized_pnl_usd == pytest.approx(sum(t.net_pnl_usd for t in result.trades))
     assert result.fees_usd == pytest.approx(sum(t.fees_usd for t in result.trades))
@@ -113,7 +136,7 @@ def test_run_grid_backtest_tracks_unrealized_loss_when_price_breaches_lower_and_
     assert result.breached_lower is True
     assert result.breached_upper is False
 
-    cost_basis = (90.0 * (1 + MAKER_FEE_RATE)) + (95.0 * (1 + MAKER_FEE_RATE)) + 2 * (100.0 * (1 + TAKER_FEE_RATE))
+    cost_basis = (90.0 + 95.0 + 2 * 100.0) * (1 + TAKER_FEE_RATE)
     expected_unrealized = 4.0 * 80.0 - cost_basis
     assert result.unrealized_pnl_usd == pytest.approx(expected_unrealized)
     assert result.total_pnl_usd == pytest.approx(expected_unrealized)

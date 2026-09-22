@@ -4,7 +4,13 @@ from datetime import datetime
 
 from app.backtest.engine import Candle
 from app.binance_client import INTERVAL_MS_MAP, get_futures_historical_klines
-from app.grid_trading.grid import DEFAULT_GRID_COUNT, GridBacktestResult, run_grid_backtest
+from app.grid_trading.grid import (
+    DEFAULT_FEE_RATE,
+    DEFAULT_GRID_COUNT,
+    DEFAULT_LEVERAGE,
+    GridBacktestResult,
+    run_grid_backtest,
+)
 from app.grid_trading.range_methods import DEFAULT_RANGE_METHOD, GridRange, compute_range
 
 DEFAULT_RANGE_INTERVAL = "4h"
@@ -79,6 +85,8 @@ def run_grid_backtest_for_symbol(
     upper_price: float,
     grid_count: int = DEFAULT_GRID_COUNT,
     capital_usd: float = DEFAULT_CAPITAL_USD,
+    leverage: float = DEFAULT_LEVERAGE,
+    fee_rate: float = DEFAULT_FEE_RATE,
 ) -> BacktestPreview:
     """Verilen sembol/tarih aralığı/zaman diliminde geçmiş mum verisini çekip
     grid backtest simülasyonunu çalıştırır (bkz.
@@ -92,5 +100,5 @@ def run_grid_backtest_for_symbol(
         raise ValueError("Başlangıç tarihi bitiş tarihinden önce olmalı")
 
     candles = _fetch_candles(symbol, interval, start_ms, end_ms)
-    result = run_grid_backtest(candles, lower_price, upper_price, grid_count, capital_usd)
+    result = run_grid_backtest(candles, lower_price, upper_price, grid_count, capital_usd, leverage, fee_rate)
     return BacktestPreview(result=result, candles=candles)

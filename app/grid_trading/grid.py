@@ -1,11 +1,19 @@
 from dataclasses import dataclass
 
 from app.backtest.engine import Candle
-from app.position_sizing import MAKER_FEE_RATE, TAKER_FEE_RATE
+from app.position_sizing import TAKER_FEE_RATE
 
 DEFAULT_GRID_COUNT = 30
 """Kullanıcı notlarındaki varsayılan: alt/üst sınır arasında 30 eşit parça.
 Backtest/canlı öncesi değiştirilebilir."""
+
+DEFAULT_LEVERAGE = 1.0
+DEFAULT_FEE_RATE = TAKER_FEE_RATE
+"""Varsayılan komisyon oranı olarak taker (%0.05, maker'dan yüksek) kullanılır:
+30 seviyeli sık dolumlu bir grid'de HER emrin maker (limit, kuyruğa girip
+karşılanan) olarak dolacağını varsaymak iyimserdir -- kısmi dolum/kuyruk
+gecikmesi gibi nedenlerle bazı dolumlar fiilen taker olabilir. Daha
+muhafazakâr/gerçekçi bir tahmin için tek tip taker oranı kullanılır."""
 
 
 def build_grid_levels(lower_price: float, upper_price: float, grid_count: int) -> list[float]:
@@ -30,9 +38,6 @@ class GridFill:
     price: float
     quantity: float
     fee_rate: float
-    """Bu dolumda uygulanan komisyon oranı -- kurulumda seed edilen (piyasadan
-    alınan) SAT'lara karşılık gelen AL'lar taker, geri kalan tüm dolumlar
-    (resting limit emri olarak dolduklarından) maker oranı kullanır."""
 
 
 @dataclass
@@ -64,6 +69,8 @@ class GridBacktestResult:
     fees_usd: float
     """TÜM dolumlarda (açık pozisyonlar dahil) ödenen toplam komisyon."""
     capital_usd: float
+    leverage: float
+    fee_rate: float
     qty_per_grid: float
     final_inventory_qty: float
     final_inventory_value_usd: float
@@ -85,30 +92,42 @@ def run_grid_backtest(
     upper_price: float,
     grid_count: int,
     capital_usd: float,
-    maker_fee_rate: float = MAKER_FEE_RATE,
-    taker_fee_rate: float = TAKER_FEE_RATE,
+    leverage: float = DEFAULT_LEVERAGE,
+    fee_rate: float = DEFAULT_FEE_RATE,
 ) -> GridBacktestResult:
     """Verilen mum dizisi üzerinde bir arithmetic grid'in AL/SAT dolumlarını
     simüle eder.
 
-    Kurulum: `capital_usd`, `grid_count`'a eşit bölünüp ilk mumun açılışına
-    göre SABİT bir taban varlık miktarına (`qty_per_grid`) çevrilir — gerçek
-    bir grid botu da kurulumda sabit bir miktar belirler, işlem sırasında
-    yeniden hesaplamaz. Başlangıç fiyatının ALTINDAKİ her seviyede bekleyen
-    bir AL (limit, maker) emri vardır. ÜSTÜNDEKİ seviyeler için ise gerçek
-    grid botlarının (ör. Binance Nötr Grid) yaptığı gibi kurulumda PİYASADAN
-    (taker) o seviyeler kadar envanter alınmış kabul edilip oraya hemen bir
-    SAT emri konur — aksi halde fiyat aralığın tamamının ALTINDA başlarsa
-    (grid'in tüm seviyeleri > başlangıç fiyatı) hiç AL emri kurulamaz ve
-    envanter de olmadığından hiçbir SAT emri de oluşamaz; grid tamamen boş
-    kalır ve fiyat ne kadar dalgalanırsa dalgalansın hiçbir işlem gerçekleşmez.
-    (Başlangıç fiyatına TAM eşit bir seviye varsa o seviyeye ne AL ne SAT
-    konur — sınırda anlamsız bir 'anlık wash' işlemi önlenir.)
+    Kurulum: `capital_usd × leverage` (margin × kaldıraç = nominal pozisyon
+    büyüklüğü, bkz. app.position_sizing.compute_position_sizing'deki aynı
+    kural) `grid_count`'a eşit bölünüp ilk mumun açılışına göre SABİT bir
+    taban varlık miktarına (`qty_per_grid`) çevrilir — gerçek bir grid botu
+    da kurulumda sabit bir miktar belirler, işlem sırasında yeniden
+    hesaplamaz. `leverage=1` (varsayılan) kaldıraçsız/spot-eşdeğeri
+    davranıştır. UYARI: bu motor bir marjin/likidasyon modeli İÇERMEZ —
+    kaldıraç sadece nominal büyüklüğü (dolayısıyla K/Z ve komisyonu)
+    ölçeklendirir; yüksek kaldıraç + stop-loss olmayan bir grid'de gerçek
+    hayatta likidasyon riski vardır, bu risk burada simüle edilmez.
 
-    Bir AL dolunca bir üst seviyeye SAT emri konur (maker); o SAT da dolunca
-    kâr/zarar gerçekleşir ve BİR ALT seviyeye AL emri yeniden kurulur (hücre
-    tekrar çalışabilir hale gelir) — bu, kurulumda seed edilmiş bir SAT için
-    de geçerlidir (satıldıktan sonra bir alt seviyeden yeniden alım bekler).
+    Başlangıç fiyatının ALTINDAKİ her seviyede bekleyen bir AL (limit) emri
+    vardır. ÜSTÜNDEKİ seviyeler için ise gerçek grid botlarının (ör. Binance
+    Nötr Grid) yaptığı gibi kurulumda PİYASADAN o seviyeler kadar envanter
+    alınmış kabul edilip oraya hemen bir SAT emri konur — aksi halde fiyat
+    aralığın tamamının ALTINDA başlarsa (grid'in tüm seviyeleri > başlangıç
+    fiyatı) hiç AL emri kurulamaz ve envanter de olmadığından hiçbir SAT
+    emri de oluşamaz; grid tamamen boş kalır ve fiyat ne kadar dalgalanırsa
+    dalgalansın hiçbir işlem gerçekleşmez. (Başlangıç fiyatına TAM eşit bir
+    seviye varsa o seviyeye ne AL ne SAT konur — sınırda anlamsız bir 'anlık
+    wash' işlemi önlenir.)
+
+    Komisyon: TÜM dolumlarda (kurulum seed'i dahil) TEK bir `fee_rate`
+    uygulanır; varsayılan taker oranıdır (bkz. DEFAULT_FEE_RATE) — her
+    dolumun maker olacağını varsaymak iyimser olur.
+
+    Bir AL dolunca bir üst seviyeye SAT emri konur; o SAT da dolunca kâr/zarar
+    gerçekleşir ve BİR ALT seviyeye AL emri yeniden kurulur (hücre tekrar
+    çalışabilir hale gelir) — bu, kurulumda seed edilmiş bir SAT için de
+    geçerlidir (satıldıktan sonra bir alt seviyeden yeniden alım bekler).
 
     Fiyat aralığın dışına çıkarsa (breached_lower/breached_upper) o yöndeki
     emirler tükenir ve motor kendiliğinden yeni emir açmaz — kalan envanter
@@ -124,15 +143,16 @@ def run_grid_backtest(
         raise ValueError("Backtest için en az bir mum gerekli")
     if capital_usd <= 0:
         raise ValueError("capital_usd pozitif olmalı")
+    if leverage <= 0:
+        raise ValueError("leverage pozitif olmalı")
 
     levels = build_grid_levels(lower_price, upper_price, grid_count)
     start_price = candles[0].open
     start_time_ms = candles[0].open_time_ms
-    qty_per_grid = (capital_usd / grid_count) / start_price
+    qty_per_grid = (capital_usd * leverage / grid_count) / start_price
 
     pending_buys: set[int] = set()
-    # sell_level_index -> (buy_price, buy_time_ms, o alışa uygulanan komisyon oranı)
-    pending_sells: dict[int, tuple[float, int, float]] = {}
+    pending_sells: dict[int, tuple[float, int]] = {}  # sell_level_index -> (buy_price, buy_time_ms)
     fills: list[GridFill] = []
     fees_usd = 0.0
 
@@ -140,13 +160,11 @@ def run_grid_backtest(
         if level < start_price:
             pending_buys.add(i)
         elif level > start_price:
-            seed_fee = start_price * qty_per_grid * taker_fee_rate
+            seed_fee = start_price * qty_per_grid * fee_rate
             fees_usd += seed_fee
-            pending_sells[i] = (start_price, start_time_ms, taker_fee_rate)
+            pending_sells[i] = (start_price, start_time_ms)
             fills.append(
-                GridFill(
-                    side="BUY", time_ms=start_time_ms, price=start_price, quantity=qty_per_grid, fee_rate=taker_fee_rate
-                )
+                GridFill(side="BUY", time_ms=start_time_ms, price=start_price, quantity=qty_per_grid, fee_rate=fee_rate)
             )
 
     trades: list[GridTrade] = []
@@ -156,17 +174,13 @@ def run_grid_backtest(
     for candle in candles:
         min_price_seen = min(min_price_seen, candle.low)
         max_price_seen = max(max_price_seen, candle.high)
-        fees_usd += _process_candle(
-            candle, levels, pending_buys, pending_sells, qty_per_grid, maker_fee_rate, trades, fills
-        )
+        fees_usd += _process_candle(candle, levels, pending_buys, pending_sells, qty_per_grid, fee_rate, trades, fills)
 
     end_price = candles[-1].close
     realized_pnl_usd = sum(t.net_pnl_usd for t in trades)
 
     final_inventory_qty = len(pending_sells) * qty_per_grid
-    cost_basis_usd = sum(
-        buy_price * qty_per_grid * (1 + buy_fee_rate) for buy_price, _, buy_fee_rate in pending_sells.values()
-    )
+    cost_basis_usd = sum(buy_price * qty_per_grid * (1 + fee_rate) for buy_price, _ in pending_sells.values())
     final_inventory_value_usd = final_inventory_qty * end_price
     unrealized_pnl_usd = final_inventory_value_usd - cost_basis_usd
 
@@ -179,6 +193,8 @@ def run_grid_backtest(
         total_pnl_usd=realized_pnl_usd + unrealized_pnl_usd,
         fees_usd=fees_usd,
         capital_usd=capital_usd,
+        leverage=leverage,
+        fee_rate=fee_rate,
         qty_per_grid=qty_per_grid,
         final_inventory_qty=final_inventory_qty,
         final_inventory_value_usd=final_inventory_value_usd,
@@ -197,7 +213,7 @@ def _process_candle(
     candle: Candle,
     levels: list[float],
     pending_buys: set[int],
-    pending_sells: dict[int, tuple[float, int, float]],
+    pending_sells: dict[int, tuple[float, int]],
     qty_per_grid: float,
     fee_rate: float,
     trades: list[GridTrade],
@@ -222,7 +238,7 @@ def _sweep(
     candle: Candle,
     levels: list[float],
     pending_buys: set[int],
-    pending_sells: dict[int, tuple[float, int, float]],
+    pending_sells: dict[int, tuple[float, int]],
     qty_per_grid: float,
     fee_rate: float,
     trades: list[GridTrade],
@@ -267,7 +283,7 @@ def _fill_buy(
     candle: Candle,
     levels: list[float],
     pending_buys: set[int],
-    pending_sells: dict[int, tuple[float, int, float]],
+    pending_sells: dict[int, tuple[float, int]],
     qty_per_grid: float,
     fee_rate: float,
     fills: list[GridFill],
@@ -277,7 +293,7 @@ def _fill_buy(
     pending_buys.discard(index)
     fills.append(GridFill(side="BUY", time_ms=candle.open_time_ms, price=price, quantity=qty_per_grid, fee_rate=fee_rate))
     if index + 1 < len(levels):
-        pending_sells[index + 1] = (price, candle.open_time_ms, fee_rate)
+        pending_sells[index + 1] = (price, candle.open_time_ms)
     return fee
 
 
@@ -286,17 +302,17 @@ def _fill_sell(
     candle: Candle,
     levels: list[float],
     pending_buys: set[int],
-    pending_sells: dict[int, tuple[float, int, float]],
+    pending_sells: dict[int, tuple[float, int]],
     qty_per_grid: float,
     fee_rate: float,
     trades: list[GridTrade],
     fills: list[GridFill],
 ) -> float:
-    buy_price, buy_time_ms, buy_fee_rate = pending_sells.pop(index)
+    buy_price, buy_time_ms = pending_sells.pop(index)
     sell_price = levels[index]
 
     sell_fee = sell_price * qty_per_grid * fee_rate
-    buy_fee = buy_price * qty_per_grid * buy_fee_rate
+    buy_fee = buy_price * qty_per_grid * fee_rate
     gross_pnl = (sell_price - buy_price) * qty_per_grid
     net_pnl = gross_pnl - sell_fee - buy_fee
 

@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.backtest.engine import Candle
-from app.grid_trading.grid import DEFAULT_GRID_COUNT, GridBacktestResult, build_grid_levels
+from app.grid_trading.grid import DEFAULT_FEE_RATE, DEFAULT_GRID_COUNT, GridBacktestResult, build_grid_levels
 from app.grid_trading.range_methods import DEFAULT_RANGE_METHOD, RANGE_METHOD_LABELS, GridRange
 from app.grid_trading.screener import CandidateResult, ScreenerCriteria
 from app.grid_trading.service import (
@@ -515,6 +515,24 @@ class GridTab(QWidget):
         bounds_row.addWidget(self.capital_input)
         section.addLayout(bounds_row)
 
+        risk_row = QHBoxLayout()
+        risk_row.addWidget(QLabel("Kaldıraç"))
+        self.leverage_input = QSpinBox()
+        self.leverage_input.setRange(1, 20)
+        self.leverage_input.setValue(3)
+        self.leverage_input.setSuffix("x")
+        risk_row.addWidget(self.leverage_input)
+
+        risk_row.addWidget(QLabel("Komisyon %"))
+        self.fee_rate_input = QDoubleSpinBox()
+        self.fee_rate_input.setRange(0.0, 1.0)
+        self.fee_rate_input.setDecimals(3)
+        self.fee_rate_input.setSingleStep(0.01)
+        self.fee_rate_input.setValue(DEFAULT_FEE_RATE * 100)
+        risk_row.addWidget(self.fee_rate_input)
+        risk_row.addStretch()
+        section.addLayout(risk_row)
+
         date_row = QHBoxLayout()
         date_row.addWidget(QLabel("Zaman Dilimi"))
         self.backtest_interval_combo = QComboBox()
@@ -544,16 +562,22 @@ class GridTab(QWidget):
         section.addLayout(date_row)
 
         hint = QLabel(
-            "Sabit sermaye grid sayısına eşit bölünüp ilk mumun açılışına göre sabit bir "
-            "miktara çevrilir. Başlangıç fiyatının ALTINDAKİ seviyelere AL emri konur; "
-            "ÜSTÜNDEKİ seviyeler için ise (gerçek grid botlarında olduğu gibi) kurulumda "
-            "PİYASADAN envanter alınıp hemen SAT emri konur — aksi halde fiyat aralığın "
-            "tamamen dışında başlarsa (ör. aralık güncel fiyata göre hesaplanıp backtest "
-            "geçmişe dönük çalıştırıldığında) hiç emir kurulamaz ve hiç işlem gerçekleşmez. "
-            "Her hücre AL+SAT tamamlandığında yeniden kurulur. Fiyat aralığın dışına çıkarsa "
-            "o yöndeki emirler tükenir (stop-loss YOK) — kalan envanter/nakit sadece "
-            "mark-to-market izlenir. Bu sekme sadece geçmiş veri üzerinde simülasyon yapar, "
-            "gerçek işlem açmaz."
+            "Sermaye × kaldıraç (nominal büyüklük) grid sayısına eşit bölünüp ilk mumun "
+            "açılışına göre sabit bir miktara çevrilir. Başlangıç fiyatının ALTINDAKİ "
+            "seviyelere AL emri konur; ÜSTÜNDEKİ seviyeler için ise (gerçek grid botlarında "
+            "olduğu gibi) kurulumda PİYASADAN envanter alınıp hemen SAT emri konur — aksi "
+            "halde fiyat aralığın tamamen dışında başlarsa (ör. aralık güncel fiyata göre "
+            "hesaplanıp backtest geçmişe dönük çalıştırıldığında) hiç emir kurulamaz ve hiç "
+            "işlem gerçekleşmez. Her hücre AL+SAT tamamlandığında yeniden kurulur. TÜM "
+            "dolumlarda (kurulum seed'i dahil) girdiğiniz TEK komisyon oranı uygulanır — "
+            "varsayılan olarak taker (maker'dan yüksek) oranı, her dolumun iyimser biçimde "
+            "maker olacağını varsaymamak için. Fiyat aralığın dışına çıkarsa o yöndeki "
+            "emirler tükenir (stop-loss YOK) — kalan envanter/nakit sadece mark-to-market "
+            "izlenir. UYARI: kaldıraç sadece nominal büyüklüğü (K/Z ve komisyonu) "
+            "ölçeklendirir; bir marjin/likidasyon modeli YOKTUR — gerçek hayatta yüksek "
+            "kaldıraç + stop-loss'suz bir grid likidasyon riski taşır, bu risk burada "
+            "simüle edilmez. Bu sekme sadece geçmiş veri üzerinde simülasyon yapar, gerçek "
+            "işlem açmaz."
         )
         hint.setWordWrap(True)
         section.addWidget(hint)
@@ -605,6 +629,8 @@ class GridTab(QWidget):
             self.upper_price_input.value(),
             self.grid_count_input.value(),
             self.capital_input.value(),
+            self.leverage_input.value(),
+            self.fee_rate_input.value() / 100,
         )
         self._backtest_worker.success.connect(self._on_backtest_finished)
         self._backtest_worker.error.connect(self._on_backtest_error)
@@ -647,7 +673,8 @@ class GridTab(QWidget):
             f"<span style='color:{unrealized_color};'>{result.unrealized_pnl_usd:+,.4f}$</span> "
             f"({result.final_inventory_qty:.6f} adet, {result.final_inventory_value_usd:,.2f}$ değerinde)",
             f"<b>Toplam K/Z:</b> <span style='color:{pnl_color};'>{result.total_pnl_usd:+,.4f}$</span> &nbsp; "
-            f"<b>Toplam Komisyon:</b> {result.fees_usd:,.4f}$",
+            f"<b>Toplam Komisyon:</b> {result.fees_usd:,.4f}$ "
+            f"({result.leverage:g}x kaldıraç, %{result.fee_rate * 100:g} komisyon oranıyla)",
             f"<b>Grid Aralığı:</b> {result.grid_levels[0]:,.6f} - {result.grid_levels[-1]:,.6f} "
             f"({len(result.grid_levels) - 1} grid) &nbsp; "
             f"<b>Başlangıç/Bitiş Fiyatı:</b> {result.start_price:,.6f} / {result.end_price:,.6f}",

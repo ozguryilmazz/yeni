@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+import pytest
 from PySide6.QtGui import QGuiApplication
 
 from app.backtest.engine import Candle
@@ -36,6 +37,8 @@ def _grid_backtest_result(trades: list[GridTrade] | None = None) -> GridBacktest
         total_pnl_usd=sum(t.net_pnl_usd for t in trades) - 1.5,
         fees_usd=0.05,
         capital_usd=400.0,
+        leverage=3.0,
+        fee_rate=0.0005,
         qty_per_grid=1.0,
         final_inventory_qty=1.0,
         final_inventory_value_usd=90.0,
@@ -242,11 +245,16 @@ def test_successful_backtest_renders_summary_trade_table_and_chart(qapp):
     result = _grid_backtest_result(trades=[trade])
     preview = BacktestPreview(result=result, candles=_backtest_candles())
 
-    with patch("app.workers.run_grid_backtest_for_symbol", return_value=preview):
+    with patch("app.workers.run_grid_backtest_for_symbol", return_value=preview) as mock_run:
         tab = GridTab()
+        tab.leverage_input.setValue(7)
+        tab.fee_rate_input.setValue(0.04)
         tab._handle_run_backtest()
         tab._backtest_worker.wait()
         qapp.processEvents()
+
+    assert mock_run.call_args.kwargs["leverage"] == 7
+    assert mock_run.call_args.kwargs["fee_rate"] == pytest.approx(0.0004)  # %0.04 -> oran
 
     assert tab.run_backtest_button.isEnabled()
     assert "1" in tab.backtest_summary_label.text()  # Tamamlanan İşlem: 1

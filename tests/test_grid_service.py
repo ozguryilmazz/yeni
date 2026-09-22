@@ -79,6 +79,34 @@ def test_run_grid_backtest_for_symbol_fetches_requested_window_and_uppercases_sy
     assert len(result.candles) == len(rows)
 
 
+def test_run_grid_backtest_for_symbol_passes_through_leverage_and_fee_rate():
+    interval_ms = INTERVAL_MS_MAP["15m"]
+    start = datetime(2024, 1, 2, tzinfo=timezone.utc)
+    end = datetime(2024, 1, 3, tzinfo=timezone.utc)
+    rows = [(100.0, 100.5, 99.5, 100.2)] * 50
+
+    with patch(
+        "app.grid_trading.service.get_futures_historical_klines",
+        return_value=_klines(rows, start_ms=int(start.timestamp() * 1000), interval_ms=interval_ms),
+    ):
+        result = run_grid_backtest_for_symbol(
+            "BTCUSDT",
+            start,
+            end,
+            interval="15m",
+            lower_price=90.0,
+            upper_price=110.0,
+            grid_count=4,
+            capital_usd=400.0,
+            leverage=5.0,
+            fee_rate=0.001,
+        )
+
+    assert result.result.leverage == pytest.approx(5.0)
+    assert result.result.fee_rate == pytest.approx(0.001)
+    assert result.result.qty_per_grid == pytest.approx((400.0 * 5.0 / 4) / 100.0)
+
+
 def test_run_grid_backtest_for_symbol_raises_when_start_is_not_before_end():
     same = datetime(2024, 1, 1, tzinfo=timezone.utc)
     with pytest.raises(ValueError):

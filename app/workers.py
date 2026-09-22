@@ -151,6 +151,8 @@ class RunGridBacktestWorker(QThread):
         upper_price: float,
         grid_count: int,
         capital_usd: float,
+        leverage: float,
+        fee_rate: float,
     ) -> None:
         super().__init__()
         self._symbol = symbol
@@ -161,6 +163,8 @@ class RunGridBacktestWorker(QThread):
         self._upper_price = upper_price
         self._grid_count = grid_count
         self._capital_usd = capital_usd
+        self._leverage = leverage
+        self._fee_rate = fee_rate
 
     def run(self) -> None:
         try:
@@ -173,6 +177,8 @@ class RunGridBacktestWorker(QThread):
                 self._upper_price,
                 grid_count=self._grid_count,
                 capital_usd=self._capital_usd,
+                leverage=self._leverage,
+                fee_rate=self._fee_rate,
             )
         except Exception as exc:  # noqa: BLE001
             self.error.emit(str(exc))
