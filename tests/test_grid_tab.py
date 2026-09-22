@@ -4,7 +4,7 @@ import pytest
 from PySide6.QtGui import QGuiApplication
 
 from app.backtest.engine import Candle
-from app.grid_trading.grid import GridBacktestResult, GridFill, GridTrade
+from app.grid_trading.grid import GridBacktestResult, GridFill, GridLiquidation, GridTrade
 from app.grid_trading.range_methods import GridRange
 from app.grid_trading.screener import CandidateResult
 from app.grid_trading.service import BacktestPreview, RangePreview
@@ -26,22 +26,26 @@ def _candidate(symbol: str, passes: bool, **overrides) -> CandidateResult:
     return CandidateResult(**defaults)
 
 
-def _grid_backtest_result(trades: list[GridTrade] | None = None) -> GridBacktestResult:
+def _grid_backtest_result(
+    trades: list[GridTrade] | None = None, liquidation: GridLiquidation | None = None
+) -> GridBacktestResult:
     trades = trades or []
+    total_pnl = -400.0 if liquidation else sum(t.net_pnl_usd for t in trades) - 1.5
     return GridBacktestResult(
         grid_levels=[90.0, 95.0, 100.0, 105.0, 110.0],
         trades=trades,
         fills=[GridFill(side="BUY", time_ms=0, price=90.0, quantity=1.0, fee_rate=0.0002)],
         realized_pnl_usd=sum(t.net_pnl_usd for t in trades),
-        unrealized_pnl_usd=-1.5,
-        total_pnl_usd=sum(t.net_pnl_usd for t in trades) - 1.5,
+        unrealized_pnl_usd=0.0 if liquidation else -1.5,
+        total_pnl_usd=total_pnl,
         fees_usd=0.05,
         capital_usd=400.0,
         leverage=3.0,
         fee_rate=0.0005,
+        maintenance_margin_rate=0.005,
         qty_per_grid=1.0,
-        final_inventory_qty=1.0,
-        final_inventory_value_usd=90.0,
+        final_inventory_qty=0.0 if liquidation else 1.0,
+        final_inventory_value_usd=0.0 if liquidation else 90.0,
         start_price=100.0,
         end_price=90.0,
         min_price_seen=88.0,
@@ -49,7 +53,9 @@ def _grid_backtest_result(trades: list[GridTrade] | None = None) -> GridBacktest
         breached_lower=True,
         breached_upper=False,
         open_buy_levels=[],
-        open_sell_levels=[95.0],
+        open_sell_levels=[] if liquidation else [95.0],
+        liquidated=liquidation is not None,
+        liquidation=liquidation,
     )
 
 
@@ -249,23 +255,48 @@ def test_successful_backtest_renders_summary_trade_table_and_chart(qapp):
         tab = GridTab()
         tab.leverage_input.setValue(7)
         tab.fee_rate_input.setValue(0.04)
+        tab.maintenance_margin_input.setValue(0.6)
         tab._handle_run_backtest()
         tab._backtest_worker.wait()
         qapp.processEvents()
 
     assert mock_run.call_args.kwargs["leverage"] == 7
     assert mock_run.call_args.kwargs["fee_rate"] == pytest.approx(0.0004)  # %0.04 -> oran
+    assert mock_run.call_args.kwargs["maintenance_margin_rate"] == pytest.approx(0.006)  # %0.6 -> oran
 
     assert tab.run_backtest_button.isEnabled()
     assert "1" in tab.backtest_summary_label.text()  # Tamamlanan İşlem: 1
     assert "ALT sınırın altına indi" in tab.backtest_summary_label.text()
     assert "ÜST sınırın üstüne çıktı" not in tab.backtest_summary_label.text()
+    assert "LİKİDE OLDU" not in tab.backtest_summary_label.text()
     assert tab.grid_trade_table.rowCount() == 1
     assert tab.grid_trade_table.item(0, 1).text() == "90.000000"
 
-    # Grafik: mum serisi + 2 ara grid seviyesi (95,100,105 hariç uç ikisi) +
-    # alt/üst sınır çizgileri (2) -- result.grid_levels=[90,95,100,105,110].
+    # Grafik: mum + 3 ara grid seviyesi + alt/üst sınır -- likidasyon YOK, 3. bir
+    # referans çizgisi (likidasyon) eklenmemeli.
     assert len(tab.backtest_chart.series()) == 1 + 3 + 2
+
+
+def test_liquidated_backtest_shows_warning_and_liquidation_chart_line(qapp):
+    liquidation = GridLiquidation(
+        time_ms=0, liquidation_price=92.5, position_qty=15.0, avg_entry_price=98.0, margin_lost_usd=1.5
+    )
+    result = _grid_backtest_result(liquidation=liquidation)
+    preview = BacktestPreview(result=result, candles=_backtest_candles())
+
+    with patch("app.workers.run_grid_backtest_for_symbol", return_value=preview):
+        tab = GridTab()
+        tab._handle_run_backtest()
+        tab._backtest_worker.wait()
+        qapp.processEvents()
+
+    summary = tab.backtest_summary_label.text()
+    assert "LİKİDE OLDU" in summary
+    assert "92.5" in summary
+    assert "400" in summary  # kaybedilen sermaye (capital_usd)
+
+    # Grafik: mum + 3 ara grid seviyesi + alt/üst sınır + likidasyon çizgisi (4. referans).
+    assert len(tab.backtest_chart.series()) == 1 + 3 + 3
 
 
 def test_backtest_error_shows_warning_and_reenables_button(qapp):

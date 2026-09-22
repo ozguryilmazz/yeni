@@ -8,6 +8,7 @@ from app.grid_trading.grid import (
     DEFAULT_FEE_RATE,
     DEFAULT_GRID_COUNT,
     DEFAULT_LEVERAGE,
+    DEFAULT_MAINTENANCE_MARGIN_RATE,
     GridBacktestResult,
     run_grid_backtest,
 )
@@ -87,6 +88,7 @@ def run_grid_backtest_for_symbol(
     capital_usd: float = DEFAULT_CAPITAL_USD,
     leverage: float = DEFAULT_LEVERAGE,
     fee_rate: float = DEFAULT_FEE_RATE,
+    maintenance_margin_rate: float = DEFAULT_MAINTENANCE_MARGIN_RATE,
 ) -> BacktestPreview:
     """Verilen sembol/tarih aralığı/zaman diliminde geçmiş mum verisini çekip
     grid backtest simülasyonunu çalıştırır (bkz.
@@ -100,5 +102,7 @@ def run_grid_backtest_for_symbol(
         raise ValueError("Başlangıç tarihi bitiş tarihinden önce olmalı")
 
     candles = _fetch_candles(symbol, interval, start_ms, end_ms)
-    result = run_grid_backtest(candles, lower_price, upper_price, grid_count, capital_usd, leverage, fee_rate)
+    result = run_grid_backtest(
+        candles, lower_price, upper_price, grid_count, capital_usd, leverage, fee_rate, maintenance_margin_rate
+    )
     return BacktestPreview(result=result, candles=candles)

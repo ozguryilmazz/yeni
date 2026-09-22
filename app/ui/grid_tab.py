@@ -31,7 +31,13 @@ from PySide6.QtWidgets import (
 )
 
 from app.backtest.engine import Candle
-from app.grid_trading.grid import DEFAULT_FEE_RATE, DEFAULT_GRID_COUNT, GridBacktestResult, build_grid_levels
+from app.grid_trading.grid import (
+    DEFAULT_FEE_RATE,
+    DEFAULT_GRID_COUNT,
+    DEFAULT_MAINTENANCE_MARGIN_RATE,
+    GridBacktestResult,
+    build_grid_levels,
+)
 from app.grid_trading.range_methods import DEFAULT_RANGE_METHOD, RANGE_METHOD_LABELS, GridRange
 from app.grid_trading.screener import CandidateResult, ScreenerCriteria
 from app.grid_trading.service import (
@@ -530,6 +536,14 @@ class GridTab(QWidget):
         self.fee_rate_input.setSingleStep(0.01)
         self.fee_rate_input.setValue(DEFAULT_FEE_RATE * 100)
         risk_row.addWidget(self.fee_rate_input)
+
+        risk_row.addWidget(QLabel("Bakım Marjini %"))
+        self.maintenance_margin_input = QDoubleSpinBox()
+        self.maintenance_margin_input.setRange(0.01, 10.0)
+        self.maintenance_margin_input.setDecimals(3)
+        self.maintenance_margin_input.setSingleStep(0.1)
+        self.maintenance_margin_input.setValue(DEFAULT_MAINTENANCE_MARGIN_RATE * 100)
+        risk_row.addWidget(self.maintenance_margin_input)
         risk_row.addStretch()
         section.addLayout(risk_row)
 
@@ -571,13 +585,16 @@ class GridTab(QWidget):
             "işlem gerçekleşmez. Her hücre AL+SAT tamamlandığında yeniden kurulur. TÜM "
             "dolumlarda (kurulum seed'i dahil) girdiğiniz TEK komisyon oranı uygulanır — "
             "varsayılan olarak taker (maker'dan yüksek) oranı, her dolumun iyimser biçimde "
-            "maker olacağını varsaymamak için. Fiyat aralığın dışına çıkarsa o yöndeki "
-            "emirler tükenir (stop-loss YOK) — kalan envanter/nakit sadece mark-to-market "
-            "izlenir. UYARI: kaldıraç sadece nominal büyüklüğü (K/Z ve komisyonu) "
-            "ölçeklendirir; bir marjin/likidasyon modeli YOKTUR — gerçek hayatta yüksek "
-            "kaldıraç + stop-loss'suz bir grid likidasyon riski taşır, bu risk burada "
-            "simüle edilmez. Bu sekme sadece geçmiş veri üzerinde simülasyon yapar, gerçek "
-            "işlem açmaz."
+            "maker olacağını varsaymamak için. Fiyat grid ARALIĞININ dışına çıkarsa o yöndeki "
+            "emirler tükenir (stop-loss YOK) — kalan envanter sadece mark-to-market izlenir. "
+            "LİKİDASYON: kaldıraç 1'den büyükse, o anki TÜM açık envanter (kurulum seed'i "
+            "dahil) tek bir izole marjin pozisyonu gibi izlenir; fiyat likidasyon seviyesine "
+            "değerse (grid aralığından bağımsız, ondan genelde çok daha aşağıda olur) TÜM açık "
+            "pozisyon zorla kapatılır, tüm emirler iptal edilir ve backtest orada durur — "
+            "sermayenin tamamı kaybedilmiş sayılır. Realize edilen kârlar bu izole marjini "
+            "büyütüp likidasyon riskini gerçekçi şekilde azaltır. Bakım marjini oranı sembole "
+            "göre değişir, buradaki değer bir yaklaşıklıktır. Bu sekme sadece geçmiş veri "
+            "üzerinde simülasyon yapar, gerçek işlem açmaz."
         )
         hint.setWordWrap(True)
         section.addWidget(hint)
@@ -631,6 +648,7 @@ class GridTab(QWidget):
             self.capital_input.value(),
             self.leverage_input.value(),
             self.fee_rate_input.value() / 100,
+            self.maintenance_margin_input.value() / 100,
         )
         self._backtest_worker.success.connect(self._on_backtest_finished)
         self._backtest_worker.error.connect(self._on_backtest_error)
@@ -651,22 +669,32 @@ class GridTab(QWidget):
 
     def _render_backtest_chart(self, candles: list[Candle], result: GridBacktestResult) -> None:
         inner_levels = result.grid_levels[1:-1]
-        self._render_price_chart(
-            self.backtest_chart,
-            candles,
-            bound_lines=[
-                (result.grid_levels[0], "Alt Sınır", "#1565c0"),
-                (result.grid_levels[-1], "Üst Sınır", "#ef6c00"),
-            ],
-            grid_lines=inner_levels,
-        )
+        bound_lines = [
+            (result.grid_levels[0], "Alt Sınır", "#1565c0"),
+            (result.grid_levels[-1], "Üst Sınır", "#ef6c00"),
+        ]
+        if result.liquidation is not None:
+            bound_lines.append((result.liquidation.liquidation_price, "Likidasyon", "#b71c1c"))
+        self._render_price_chart(self.backtest_chart, candles, bound_lines=bound_lines, grid_lines=inner_levels)
 
     def _render_backtest_summary(self, result: GridBacktestResult) -> None:
         pnl_color = "#2e7d32" if result.total_pnl_usd >= 0 else "#c62828"
         realized_color = "#2e7d32" if result.realized_pnl_usd >= 0 else "#c62828"
         unrealized_color = "#2e7d32" if result.unrealized_pnl_usd >= 0 else "#c62828"
 
-        lines = [
+        lines = []
+        if result.liquidated and result.liquidation is not None:
+            liq = result.liquidation
+            lines.append(
+                "<span style='color:#b71c1c; font-weight:bold;'>LİKİDE OLDU</span> — "
+                f"{_format_ms(liq.time_ms)} tarihinde, {liq.liquidation_price:,.6f} fiyatında, "
+                f"{liq.position_qty:.6f} adetlik (ort. giriş {liq.avg_entry_price:,.6f}) açık pozisyon "
+                f"zorla kapatıldı; bot orada durdu (sonraki mumlar işlenmedi). Sermayenin TAMAMI "
+                f"({result.capital_usd:,.2f}$) kaybedilmiş sayılır — o ana kadar gerçekleşen kârlar "
+                f"da (aşağıdaki 'Gerçekleşen K/Z') aynı izole marjin cüzdanında olduğundan onunla "
+                f"birlikte gitmiştir."
+            )
+        lines += [
             f"<b>Tamamlanan İşlem:</b> {len(result.trades)} &nbsp; "
             f"<b>Gerçekleşen K/Z:</b> <span style='color:{realized_color};'>{result.realized_pnl_usd:+,.4f}$</span>",
             f"<b>Envanter (Gerçekleşmemiş) K/Z:</b> "
@@ -674,7 +702,8 @@ class GridTab(QWidget):
             f"({result.final_inventory_qty:.6f} adet, {result.final_inventory_value_usd:,.2f}$ değerinde)",
             f"<b>Toplam K/Z:</b> <span style='color:{pnl_color};'>{result.total_pnl_usd:+,.4f}$</span> &nbsp; "
             f"<b>Toplam Komisyon:</b> {result.fees_usd:,.4f}$ "
-            f"({result.leverage:g}x kaldıraç, %{result.fee_rate * 100:g} komisyon oranıyla)",
+            f"({result.leverage:g}x kaldıraç, %{result.fee_rate * 100:g} komisyon, "
+            f"%{result.maintenance_margin_rate * 100:g} bakım marjini oranıyla)",
             f"<b>Grid Aralığı:</b> {result.grid_levels[0]:,.6f} - {result.grid_levels[-1]:,.6f} "
             f"({len(result.grid_levels) - 1} grid) &nbsp; "
             f"<b>Başlangıç/Bitiş Fiyatı:</b> {result.start_price:,.6f} / {result.end_price:,.6f}",

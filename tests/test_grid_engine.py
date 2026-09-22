@@ -203,3 +203,83 @@ def test_run_grid_backtest_bookkeeping_is_internally_consistent_over_a_long_rand
     if not result.breached_lower and not result.breached_upper:
         assert result.min_price_seen > result.grid_levels[0]
         assert result.max_price_seen < result.grid_levels[-1]
+
+
+def test_run_grid_backtest_high_leverage_crash_triggers_liquidation():
+    # levels=[90,95,100,105,110]; start=100 -> AL: 90,95; SAT (seed, buy=100): 105,110.
+    # capital=100, leverage=20 -> qty_per_grid=(100*20/4)/100=5.0 -- çok yüksek
+    # kaldıraç, sert bir düşüşte izole marjini bakım marjinine kadar eritmeli.
+    candle = _candle(0, 100.0, 100.0, 85.0, 85.0)
+
+    result = run_grid_backtest([candle], 90.0, 110.0, grid_count=4, capital_usd=100.0, leverage=20.0)
+
+    assert result.liquidated is True
+    assert result.liquidation is not None
+    assert result.liquidation.time_ms == 0
+    # 95'teki AL doldu (fiyat 95'e değdi), ama 90'a değmeden -- likidasyon fiyatı
+    # (bir sonraki AL seviyesi olan 90'dan YÜKSEK) araya girdiği için 90 hiç dolmadı.
+    assert 90.0 < result.liquidation.liquidation_price < 95.0
+    assert result.liquidation.position_qty == pytest.approx(3 * 5.0)  # 95, 100(seed), 105(seed)
+    assert result.liquidation.avg_entry_price == pytest.approx((95.0 + 100.0 + 100.0) / 3)
+
+    # Likidasyon TÜM açık emirleri iptal eder -- hiçbir şey açık kalmaz.
+    assert result.open_buy_levels == []
+    assert result.open_sell_levels == []
+    assert result.final_inventory_qty == pytest.approx(0.0)
+    assert result.unrealized_pnl_usd == pytest.approx(0.0)
+
+    # Sonuç: başlangıç sermayesinin TAMAMI kaybedilmiş sayılır.
+    assert result.total_pnl_usd == pytest.approx(-100.0)
+    assert result.end_price == pytest.approx(result.liquidation.liquidation_price)
+
+
+def test_run_grid_backtest_liquidation_stops_processing_further_candles():
+    # Likidasyondan SONRAKİ mumlar (burada büyük bir ralli, likide olunmasaydı
+    # bolca işlem üretirdi) tamamen yok sayılmalı -- bot orada durur.
+    crash = _candle(0, 100.0, 100.0, 85.0, 85.0)
+    huge_rally_after = _candle(60_000, 85.0, 130.0, 85.0, 130.0)
+
+    result = run_grid_backtest(
+        [crash, huge_rally_after], 90.0, 110.0, grid_count=4, capital_usd=100.0, leverage=20.0
+    )
+
+    assert result.liquidated is True
+    assert result.trades == []  # ralli hiç işlenmedi
+    assert result.max_price_seen == pytest.approx(100.0)  # crash mumunun high'ı; ralli sayılmadı
+
+
+def test_run_grid_backtest_low_leverage_survives_the_same_crash():
+    # Aynı sert düşüş, ama kaldıraçsız (1x) -- marjin tamponu bakım marjininin
+    # çok üstünde kalır, likidasyon TETİKLENMEMELİ.
+    candle = _candle(0, 100.0, 100.0, 85.0, 85.0)
+
+    result = run_grid_backtest([candle], 90.0, 110.0, grid_count=4, capital_usd=100.0, leverage=1.0)
+
+    assert result.liquidated is False
+    assert result.liquidation is None
+
+
+def test_run_grid_backtest_realized_profit_cushions_liquidation_risk():
+    # Önce birkaç kâr realize eden bir sıçrama (izole marjin cüzdanını
+    # büyütür), SONRA aynı sert düşüş -- kâr tamponu sayesinde, tamponsuz
+    # aynı düşüşün tetiklediği likidasyon burada TETİKLENMEMELİ (ya da en
+    # azından daha düşük bir fiyata itilmeli).
+    baseline = run_grid_backtest(
+        [_candle(0, 100.0, 100.0, 85.0, 85.0)], 90.0, 110.0, grid_count=4, capital_usd=100.0, leverage=20.0
+    )
+    assert baseline.liquidated is True  # referans: tamponsuz durum likide oluyor
+
+    cushioned = run_grid_backtest(
+        [
+            _candle(0, 100.0, 115.0, 100.0, 115.0),  # ralli: seed edilmiş SAT'lar (105,110) kâr realize eder
+            _candle(60_000, 115.0, 115.0, 85.0, 85.0),  # AYNI sert düşüş
+        ],
+        90.0,
+        110.0,
+        grid_count=4,
+        capital_usd=100.0,
+        leverage=20.0,
+    )
+
+    assert len(cushioned.trades) >= 1  # rallide en az bir hücre kâr realize etti
+    assert not cushioned.liquidated or cushioned.liquidation.liquidation_price < baseline.liquidation.liquidation_price
