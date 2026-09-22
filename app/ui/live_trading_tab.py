@@ -28,6 +28,7 @@ from app.live_trading.qt_bridge import LiveTradingThread
 from app.live_trading.repository import list_live_trades, record_trade_closed, record_trade_opened
 from app.position_sizing import LEVERAGE, MARGIN_USD, SL_FEE_MULT, TP_FEE_MULT
 from app.strategies.registry import DEFAULT_STRATEGY_NAME, STRATEGIES, get_strategy
+from app.ui.widgets import make_info_label
 
 INTERVAL_LABELS = {"1m": "1 Dakika", "5m": "5 Dakika", "15m": "15 Dakika", "1h": "1 Saat"}
 STATUS_LABELS = {
@@ -86,7 +87,7 @@ class LiveTradingTab(QWidget):
     # ---- kurulum ---------------------------------------------------------
 
     def _build_warning_banner(self) -> QLabel:
-        banner = QLabel(
+        banner = make_info_label(
             "⚠️ GERÇEK PARA — Bu sekme Binance Futures hesabınızda gerçek parayla otomatik "
             "işlem açar/kapar. Test veya simülasyon değildir; Backtest sekmesinin aksine burada "
             "gönderilen her emir gerçek bir borsa işlemidir. SL/TP borsa tarafında gerçek "

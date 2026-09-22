@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.ui.widgets import make_info_label
 from app.whale_tracker.models import TrapScoreResult
 from app.whale_tracker.qt_bridge import WhaleTrackerThread
 
@@ -65,7 +66,7 @@ class WhaleTrapTab(QWidget):
         controls.addStretch()
         layout.addLayout(controls)
 
-        hint = QLabel(
+        hint = make_info_label(
             "Teknik indikatör (RSI/MACD/MA) kullanmaz. Open Interest sıçraması, Funding "
             "Rate anomalisi, anlık likidasyon patlamaları, emir defteri dengesizliği ve "
             "hacim verisini birleştirerek 0-100 arası bir 'Tuzak Skoru' üretir. Sadece "
@@ -76,13 +77,13 @@ class WhaleTrapTab(QWidget):
 
         score_row = QHBoxLayout()
         score_row.addWidget(QLabel("<b>Tuzak Skoru:</b>"))
-        self.score_label = QLabel("—")
+        self.score_label = make_info_label("—")
         self.score_label.setStyleSheet("font-size: 22px; font-weight: bold;")
         score_row.addWidget(self.score_label)
-        self.direction_label = QLabel("")
+        self.direction_label = make_info_label("")
         self.direction_label.setStyleSheet("font-size: 16px;")
         score_row.addWidget(self.direction_label)
-        self.regime_label = QLabel("")
+        self.regime_label = make_info_label("")
         self.regime_label.setStyleSheet("font-size: 12px; color: #888888;")
         self.regime_label.setToolTip(
             "Likidasyon modülü tetiklendiğinde skor motoru otomatik olarak 'kriz "

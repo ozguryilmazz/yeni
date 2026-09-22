@@ -49,6 +49,7 @@ from app.grid_trading.service import (
     RangePreview,
 )
 from app.ui.market_tab import NumericTableWidgetItem
+from app.ui.widgets import make_info_label
 from app.workers import ComputeGridRangeWorker, RunGridBacktestWorker, RunGridScreenerWorker
 
 RANGE_INTERVAL_LABELS = {"4h": "4 Saatlik", "1d": "Günlük"}
@@ -128,7 +129,7 @@ class GridTab(QWidget):
         section = QVBoxLayout()
         section.addWidget(QLabel("<b>1. Coin Tarama</b>"))
 
-        hint = QLabel(
+        hint = make_info_label(
             "24s hacim (spotta ≥50M$, futures'ta ≥200M$), volatilite (günlük ATR14/fiyat "
             "%2-%6 arası) ve trend olmama (4 saatlik ADX14<25) kriterlerine göre TÜM USDT-M "
             "futures sembollerini tarar. Bir satıra çift tıklayarak sembolü aşağıdaki "
@@ -149,7 +150,7 @@ class GridTab(QWidget):
         controls.addStretch()
         section.addLayout(controls)
 
-        self.screener_status_label = QLabel("—")
+        self.screener_status_label = make_info_label("—")
         section.addWidget(self.screener_status_label)
 
         self.screener_table = QTableWidget(0, 6)
@@ -265,7 +266,7 @@ class GridTab(QWidget):
         compute_row.addStretch()
         section.addLayout(compute_row)
 
-        self.range_result_label = QLabel("—")
+        self.range_result_label = make_info_label("—")
         self.range_result_label.setWordWrap(True)
         section.addWidget(self.range_result_label)
 
@@ -582,7 +583,7 @@ class GridTab(QWidget):
         date_row.addStretch()
         section.addLayout(date_row)
 
-        hint = QLabel(
+        hint = make_info_label(
             "Sermaye × kaldıraç (nominal büyüklük) grid sayısına eşit bölünüp ilk mumun "
             "açılışına göre sabit bir miktara çevrilir. Başlangıç fiyatının ALTINDAKİ "
             "seviyelere AL emri konur; ÜSTÜNDEKİ seviyeler için ise (gerçek grid botlarında "
@@ -606,7 +607,7 @@ class GridTab(QWidget):
         hint.setWordWrap(True)
         section.addWidget(hint)
 
-        self.backtest_summary_label = QLabel("—")
+        self.backtest_summary_label = make_info_label("—")
         self.backtest_summary_label.setWordWrap(True)
         section.addWidget(self.backtest_summary_label)
 

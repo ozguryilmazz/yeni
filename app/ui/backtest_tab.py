@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from app.backtest.engine import BacktestResult, Trade
 from app.backtest.service import DEFAULT_INTERVAL, BacktestComparison
 from app.strategies.registry import DEFAULT_STRATEGY_NAME, STRATEGIES
+from app.ui.widgets import make_info_label
 from app.workers import RunBacktestWorker
 
 EXIT_REASON_LABELS = {"TP": "TP", "SL": "SL", "TIME": "Zaman Aşımı", "EOD": "Veri Sonu"}
@@ -88,7 +89,7 @@ class BacktestTab(QWidget):
         controls.addStretch()
         layout.addLayout(controls)
 
-        hint = QLabel(
+        hint = make_info_label(
             "Yukarıdan bir strateji seçip seçilen zaman diliminde çalıştırırsın. Varsayılan "
             "'Esnetilmiş 5D Scalp': Fiyat EMA100 üzerindeyse LONG, altındaysa SHORT yönü aranır "
             "— ama EMA100'ün kendisi de son 20 mumda en az 0.5×ATR kadar aynı yönde eğimli olmalı "
@@ -112,21 +113,21 @@ class BacktestTab(QWidget):
         summaries = QHBoxLayout()
         normal_box = QVBoxLayout()
         normal_box.addWidget(QLabel("<b>Normal Yön (strateji sinyali)</b>"))
-        self.normal_summary_label = QLabel("—")
+        self.normal_summary_label = make_info_label("—")
         self.normal_summary_label.setWordWrap(True)
         normal_box.addWidget(self.normal_summary_label)
         summaries.addLayout(normal_box)
 
         reversed_box = QVBoxLayout()
         reversed_box.addWidget(QLabel("<b>Ters Yön (sinyalin tersi)</b>"))
-        self.reversed_summary_label = QLabel("—")
+        self.reversed_summary_label = make_info_label("—")
         self.reversed_summary_label.setWordWrap(True)
         reversed_box.addWidget(self.reversed_summary_label)
         summaries.addLayout(reversed_box)
 
         neutral_box = QVBoxLayout()
         neutral_box.addWidget(QLabel("<b>Nötr (SL=TP, ham yön başarısı)</b>"))
-        self.neutral_summary_label = QLabel("—")
+        self.neutral_summary_label = make_info_label("—")
         self.neutral_summary_label.setWordWrap(True)
         neutral_box.addWidget(self.neutral_summary_label)
         summaries.addLayout(neutral_box)

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.ui.widgets import make_info_label
 from app.workers import LoadMarketOverviewWorker
 
 PERIOD_LABELS = {"1h": "Son 1 Saat", "4h": "Son 4 Saat", "24h": "Son 24 Saat"}
@@ -57,7 +58,7 @@ class MarketTab(QWidget):
         header.addWidget(self.refresh_button)
         layout.addLayout(header)
 
-        hint = QLabel(
+        hint = make_info_label(
             "Sadece USDT-M perpetual futures'ta işlem gören coinler listelenir. Sütun "
             "başlıklarına tıklayarak sıralamayı değiştirebilirsiniz. Bir satıra sağ "
             "tıklayıp 'Sembolü Kopyala' ile coin çiftini kopyalayıp Tuzak Skoru "

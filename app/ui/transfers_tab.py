@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 from app import repository
 from app.database import session_scope
 from app.transfer_types import WalletType
+from app.ui.widgets import make_info_label
 from app.workers import ConnectCredentialWorker, CreateTransferWorker, LoadBalancesWorker
 
 WALLET_LABELS = {
@@ -43,7 +44,7 @@ class ConnectCredentialDialog(QDialog):
         self.api_secret_input = QLineEdit()
         self.api_secret_input.setEchoMode(QLineEdit.EchoMode.Password)
 
-        hint = QLabel(
+        hint = make_info_label(
             "Sadece 'Enable Reading' (ve gerekirse Spot/Futures trading) izni açık bir\n"
             "API key kullanın. Withdrawal (para çekme) izni açık key'ler reddedilir."
         )
