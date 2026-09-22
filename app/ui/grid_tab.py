@@ -802,6 +802,10 @@ class GridTab(QWidget):
         controls.addStretch()
         section.addLayout(controls)
 
+        self.paper_setup_label = make_info_label("—")
+        self.paper_setup_label.setWordWrap(True)
+        section.addWidget(self.paper_setup_label)
+
         self.paper_status_label = make_info_label("—")
         section.addWidget(self.paper_status_label)
 
@@ -835,6 +839,7 @@ class GridTab(QWidget):
             QMessageBox.warning(self, "Kağıt İşlem", "Alt sınır, üst sınırdan küçük olmalı")
             return
 
+        self.paper_setup_label.setText("—")
         self.paper_status_label.setText("Başlatılıyor…")
         self.paper_summary_label.setText("—")
         self.paper_trade_table.setRowCount(0)
@@ -851,6 +856,7 @@ class GridTab(QWidget):
             self.fee_rate_input.value() / 100,
             self.maintenance_margin_input.value() / 100,
         )
+        self._paper_thread.setup_info.connect(self._on_paper_setup_info)
         self._paper_thread.status.connect(self._on_paper_status)
         self._paper_thread.snapshot_updated.connect(self._on_paper_snapshot)
         self._paper_thread.liquidated.connect(self._on_paper_liquidated)
@@ -891,6 +897,9 @@ class GridTab(QWidget):
         emir hiç gönderilmediğinden borsada temizlenecek bir şey yoktur."""
         if self._paper_thread is not None:
             self._handle_stop_paper_trading()
+
+    def _on_paper_setup_info(self, message: str) -> None:
+        self.paper_setup_label.setText(message)
 
     def _on_paper_status(self, message: str) -> None:
         self.paper_status_label.setText(message)

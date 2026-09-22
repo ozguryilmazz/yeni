@@ -13,7 +13,7 @@ def _candle(open_time_ms: int, open_: float, high: float, low: float, close: flo
 
 
 def _make_engine(**overrides):
-    calls = {"status": [], "snapshot": [], "liquidated": [], "error": []}
+    calls = {"setup": [], "status": [], "snapshot": [], "liquidated": [], "error": []}
     defaults = dict(
         symbol="btcusdt",
         interval="5m",
@@ -24,6 +24,7 @@ def _make_engine(**overrides):
         leverage=1.0,
         fee_rate=0.0005,
         maintenance_margin_rate=0.005,
+        on_setup=lambda m: calls["setup"].append(m),
         on_status=lambda m: calls["status"].append(m),
         on_snapshot=lambda r, c: calls["snapshot"].append((r, c)),
         on_liquidated=lambda r: calls["liquidated"].append(r),
@@ -58,6 +59,7 @@ def test_run_reports_error_and_never_starts_stream_when_price_fetch_fails():
     assert engine._state is None
     assert len(calls["error"]) == 1
     assert "network down" in calls["error"][0]
+    assert calls["setup"] == []
     assert calls["status"] == []
     assert calls["snapshot"] == []
 
@@ -105,7 +107,9 @@ def test_run_reports_error_on_invalid_grid_params_without_starting_stream():
 
 
 def test_run_sets_up_grid_at_reference_price_and_emits_initial_snapshot():
-    engine, calls = _make_engine(lower_price=90.0, upper_price=110.0, grid_count=4, capital_usd=400.0)
+    engine, calls = _make_engine(
+        lower_price=90.0, upper_price=110.0, grid_count=4, capital_usd=400.0, leverage=3.0, fee_rate=0.0005
+    )
 
     async def fake_listener_run(stop_event, on_candle_closed):
         return  # akış hemen 'biter' -- gerçek WebSocket bağlantısı hiç denenmez
@@ -127,8 +131,19 @@ def test_run_sets_up_grid_at_reference_price_and_emits_initial_snapshot():
 
     assert engine._state is not None
     assert engine._state.start_price == pytest.approx(100.0)
+
+    # Açılış koşulları (fiyat/sermaye/kaldıraç/komisyon/bakım marjini/aralık) BİR KEZ,
+    # ayrı bir on_setup çağrısıyla raporlanmalı -- sonraki status mesajlarıyla ezilmemeli.
+    assert len(calls["setup"]) == 1
+    setup_message = calls["setup"][0]
+    assert "100" in setup_message
+    assert "400" in setup_message  # sermaye
+    assert "3x" in setup_message  # kaldıraç
+    assert "90" in setup_message and "110" in setup_message  # grid aralığı
+
     assert len(calls["status"]) == 1
-    assert "100" in calls["status"][0]
+    assert "izleniyor" in calls["status"][0]
+
     assert len(calls["snapshot"]) == 1
     result, candles = calls["snapshot"][0]
     assert candles == []

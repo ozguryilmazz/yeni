@@ -11,6 +11,7 @@ class GridPaperTradingThread(QThread):
     thread'inde çalıştırıp sonuçlarını Qt sinyalleriyle ana (GUI) thread'ine
     taşır — app.live_trading.qt_bridge.LiveTradingThread ile aynı desen."""
 
+    setup_info = Signal(str)
     status = Signal(str)
     snapshot_updated = Signal(object, list)  # GridBacktestResult, list[Candle]
     liquidated = Signal(object)  # GridBacktestResult
@@ -64,12 +65,16 @@ class GridPaperTradingThread(QThread):
             leverage=self._leverage,
             fee_rate=self._fee_rate,
             maintenance_margin_rate=self._maintenance_margin_rate,
+            on_setup=self._emit_setup_info,
             on_status=self._emit_status,
             on_snapshot=self._emit_snapshot,
             on_liquidated=self._emit_liquidated,
             on_error=self._emit_error,
         )
         await engine.run(self._stop_event)
+
+    def _emit_setup_info(self, message: str) -> None:
+        self.setup_info.emit(message)
 
     def _emit_status(self, message: str) -> None:
         self.status.emit(message)

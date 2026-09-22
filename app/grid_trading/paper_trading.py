@@ -47,6 +47,7 @@ class GridPaperTradingEngine:
         upper_price: float,
         grid_count: int,
         capital_usd: float,
+        on_setup: Callable[[str], None],
         on_status: Callable[[str], None],
         on_snapshot: Callable[[GridBacktestResult, list[Candle]], None],
         on_liquidated: Callable[[GridBacktestResult], None],
@@ -64,6 +65,7 @@ class GridPaperTradingEngine:
         self.leverage = leverage
         self.fee_rate = fee_rate
         self.maintenance_margin_rate = maintenance_margin_rate
+        self.on_setup = on_setup
         self.on_status = on_status
         self.on_snapshot = on_snapshot
         self.on_liquidated = on_liquidated
@@ -93,10 +95,20 @@ class GridPaperTradingEngine:
             self.on_error(f"Grid kurulamadı: {exc}")
             return
 
-        self.on_status(
-            f"Grid {reference_price:,.6f} fiyatından kuruldu — {self.symbol} {self.interval} mum "
-            f"kapanışları izleniyor…"
+        self.on_setup(
+            f"<b>Kurulum:</b> {self.symbol} ({self.interval}) &nbsp; "
+            f"<b>Başlangıç Fiyatı:</b> {reference_price:,.6f}<br>"
+            f"<b>Sermaye:</b> {self.capital_usd:,.2f}$ &nbsp; <b>Kaldıraç:</b> {self.leverage:g}x &nbsp; "
+            f"<b>Komisyon:</b> %{self.fee_rate * 100:g} &nbsp; "
+            f"<b>Bakım Marjini:</b> %{self.maintenance_margin_rate * 100:g}<br>"
+            f"<b>Grid Aralığı:</b> {self.lower_price:,.6f} - {self.upper_price:,.6f} "
+            f"({self.grid_count} grid) &nbsp; <b>Grid Başına Miktar:</b> {self._state.qty_per_grid:.6f}<br>"
+            f"<span style='color:#666;'>Not: başlangıç fiyatının ÜSTÜNDEKİ seviyelere kurulumda "
+            f"'piyasadan alınmış' envanter seed'lenir ve bu alımın komisyonu hemen tahsil edilir — bu "
+            f"yüzden fiyat henüz hiç hareket etmemiş olsa bile Toplam K/Z ilk anda hafif EKSİ görünür "
+            f"(o 'piyasa alımının' komisyon maliyeti kadar); bu bir kayıp değil, normaldir.</span>"
         )
+        self.on_status(f"{self.symbol} {self.interval} mum kapanışları izleniyor…")
         self.on_snapshot(snapshot_grid_engine(self._state, reference_price, reference_time_ms), [])
 
         listener = KlineStreamListener(self.symbol, self.interval, on_error=self.on_status)

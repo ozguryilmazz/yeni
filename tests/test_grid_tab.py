@@ -398,6 +398,30 @@ def test_stop_paper_trading_public_method_is_noop_when_not_running(qapp):
     assert tab._paper_thread is None
 
 
+def test_paper_setup_info_renders_and_survives_later_status_updates(qapp):
+    # Açılış koşulları (sermaye/kaldıraç/komisyon/vb.) ayrı bir etikette
+    # gösterilmeli ki sonradan gelen geçici durum mesajlarıyla (ör. WS
+    # yeniden bağlanma) ÜZERİNE YAZILMASIN.
+    tab = GridTab()
+
+    tab._on_paper_setup_info("<b>Kurulum:</b> ETHUSDT · Sermaye: 500.00$ · Kaldıraç: 5x")
+    tab._on_paper_status("ETHUSDT 5m mum kapanışları izleniyor…")
+
+    assert "Kurulum" in tab.paper_setup_label.text()
+    assert "500" in tab.paper_setup_label.text()
+    assert "izleniyor" in tab.paper_status_label.text()
+
+
+def test_start_paper_trading_resets_setup_label(qapp):
+    tab = GridTab()
+    tab.paper_setup_label.setText("eski kurulum bilgisi")
+
+    with patch("app.ui.grid_tab.GridPaperTradingThread", return_value=MagicMock()):
+        tab._handle_start_paper_trading()
+
+    assert tab.paper_setup_label.text() == "—"
+
+
 def test_paper_snapshot_renders_summary_chart_and_trades(qapp):
     trade = GridTrade(
         buy_price=90.0,
