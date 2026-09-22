@@ -6,6 +6,7 @@ from app.binance_client import (
     get_futures_kline_stats,
     get_futures_market_overview,
     get_futures_perpetual_symbols,
+    get_futures_recent_klines,
 )
 from app.repository import get_market_overview
 
@@ -84,6 +85,35 @@ def test_get_futures_kline_stats_empty_result_is_zero():
         "price_change_percent": 0.0,
         "volume_change_percent": 0.0,
     }
+
+
+def test_get_futures_recent_klines_returns_raw_kline_list():
+    klines = [
+        [1690000000000, "100", "110", "90", "105", "10", 1690003599999, "1000.0", 5, "5", "500", "0"],
+        [1690003600000, "105", "115", "95", "110", "12", 1690007199999, "1200.0", 6, "6", "600", "0"],
+    ]
+    with patch("app.binance_client._public_get") as mock_get:
+        mock_get.return_value = klines
+        result = get_futures_recent_klines("BTCUSDT", "5m", limit=2)
+
+    mock_get.assert_called_once_with(
+        "/fapi/v1/klines", {"symbol": "BTCUSDT", "interval": "5m", "limit": 2}, timeout=10
+    )
+    assert result == klines
+
+
+def test_get_futures_recent_klines_defaults_to_limit_two():
+    with patch("app.binance_client._public_get", return_value=[]) as mock_get:
+        get_futures_recent_klines("BTCUSDT", "1m")
+
+    assert mock_get.call_args[0][1]["limit"] == 2
+
+
+def test_get_futures_recent_klines_returns_empty_list_when_response_not_a_list():
+    with patch("app.binance_client._public_get", return_value={"error": "oops"}):
+        result = get_futures_recent_klines("BTCUSDT", "5m")
+
+    assert result == []
 
 
 def test_market_overview_24h_uses_daily_klines_via_per_symbol_path():

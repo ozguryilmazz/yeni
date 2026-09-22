@@ -3,7 +3,7 @@ import time
 from collections.abc import Callable
 
 from app.backtest.engine import Candle
-from app.binance_client import INTERVAL_MS_MAP, get_futures_kline_stats
+from app.binance_client import INTERVAL_MS_MAP, get_futures_kline_stats, get_futures_recent_klines
 from app.grid_trading.grid import (
     DEFAULT_FEE_RATE,
     DEFAULT_LEVERAGE,
@@ -14,11 +14,20 @@ from app.grid_trading.grid import (
     snapshot_grid_engine,
     start_grid_engine,
 )
-from app.live_trading.kline_stream import KlineStreamListener
 
 MAX_CHART_CANDLES = 500
 """Kağıt işlem süresiz çalışabildiğinden, grafik için biriktirilen mum
 sayısı bellek/performans için sınırlanır -- en eski mumlar atılır."""
+
+POLL_INTERVAL_SECONDS = 5.0
+"""Mum verisi WebSocket akışı YERİNE REST polling ile çekilir: bazı ağ
+ortamlarında (güvenlik duvarı/proxy) WebSocket bağlantısı el sıkışmayı
+tamamlayıp sonrasında veriyi SESSİZCE düşürebiliyor (bkz.
+app.live_trading.kline_stream.STALE_CONNECTION_SECONDS) ve bu, uygulamanın
+kontrolü dışında bir ağ sorunu; REST istekleri ise bu ortamda güvenilir
+çalışıyor. Grid motoru zaten sadece KAPANAN mum bilgisine ihtiyaç duyduğundan
+(tick verisi gerekmez), her POLL_INTERVAL_SECONDS saniyede bir en son mumlar
+çekilip yeni kapanan(lar) tespit edilir -- işlevsel olarak WS akışıyla eşdeğer."""
 
 
 class GridPaperTradingEngine:
@@ -27,14 +36,15 @@ class GridPaperTradingEngine:
     app.grid_trading.grid'deki run_grid_backtest ile AYNI dolum/likidasyon
     matematiğini (bkz. start_grid_engine/advance_grid_engine/
     snapshot_grid_engine) kullanır; tek fark, mumların önceden çekilmiş bir
-    listeden değil CANLI bir kline WebSocket akışından (bkz.
-    app.live_trading.kline_stream.KlineStreamListener) tek tek gelmesidir —
-    backtest sonuçlarının canlıda da tutarlı olup olmadığını, gerçek para
-    riske atmadan doğrulamak (ileri test/forward test) içindir.
+    listeden değil CANLI olarak REST polling ile (bkz. POLL_INTERVAL_SECONDS)
+    tek tek gelmesidir — backtest sonuçlarının canlıda da tutarlı olup
+    olmadığını, gerçek para riske atmadan doğrulamak (ileri test/forward
+    test) içindir.
 
-    Kurulum fiyatı olarak akıştaki İLK mum beklenmez (bu, zaman dilimine göre
-    dakikalarca sürebilir) -- REST üzerinden anlık fiyat çekilip grid HEMEN
-    o fiyata göre kurulur; sonra akıştan gelen HER kapanan mum motora işlenir.
+    Kurulum fiyatı olarak İLK mumun kapanması beklenmez (bu, zaman dilimine
+    göre dakikalarca sürebilir) -- REST üzerinden anlık fiyat çekilip grid
+    HEMEN o fiyata göre kurulur; sonra REST polling ile (bkz.
+    POLL_INTERVAL_SECONDS) tespit edilen HER yeni kapanan mum motora işlenir.
     Likidasyon gerçekleşirse (bkz. app.grid_trading.grid.GridLiquidation)
     motor kendiliğinden durur -- gerçek bir grid botunda olduğu gibi elle
     yeniden başlatılması gerekir."""
@@ -74,6 +84,7 @@ class GridPaperTradingEngine:
         self._state: GridEngineState | None = None
         self._candles: list[Candle] = []
         self._stop_event: asyncio.Event | None = None
+        self._last_closed_open_time_ms: int | None = None
 
     async def run(self, stop_event: asyncio.Event) -> None:
         self._stop_event = stop_event
@@ -133,8 +144,44 @@ class GridPaperTradingEngine:
         ]
         self.on_snapshot(snapshot_grid_engine(self._state, reference_price, reference_time_ms), placeholder_candles)
 
-        listener = KlineStreamListener(self.symbol, self.interval, on_error=self.on_status)
-        await listener.run(stop_event, self._on_candle_closed)
+        await self._poll_loop(stop_event)
+
+    async def _poll_loop(self, stop_event: asyncio.Event) -> None:
+        """WebSocket akışı yerine REST polling: her POLL_INTERVAL_SECONDS
+        saniyede bir en son mumlar çekilir, kapanmış olanlardan daha önce
+        işlenmemiş olanlar (open_time_ms ile takip edilir) motora işlenir.
+        Birden fazla mum kaçırılmışsa (ör. geçici ağ hatası) hepsi sırayla
+        işlenir -- sadece en sonuncusu değil."""
+        while not stop_event.is_set():
+            try:
+                raw_klines = get_futures_recent_klines(self.symbol, self.interval, limit=5)
+            except Exception as exc:  # noqa: BLE001 - ağ hatası; bir sonraki denemede düzelebilir
+                self.on_status(f"Mum verisi çekilemedi, {POLL_INTERVAL_SECONDS:.0f}sn sonra tekrar denenecek: {exc}")
+                raw_klines = []
+
+            now_ms = int(time.time() * 1000)
+            for k in raw_klines:
+                open_time_ms = int(k[0])
+                close_time_ms = int(k[6])
+                if close_time_ms > now_ms:
+                    break  # sıralı geldiği için henüz kapanmayan bu mumdan sonrakiler de kapanmamıştır
+                if self._last_closed_open_time_ms is not None and open_time_ms <= self._last_closed_open_time_ms:
+                    continue  # daha önce işlendi
+                candle = Candle(
+                    open_time_ms=open_time_ms,
+                    open=float(k[1]),
+                    high=float(k[2]),
+                    low=float(k[3]),
+                    close=float(k[4]),
+                    volume=float(k[5]),
+                )
+                self._last_closed_open_time_ms = open_time_ms
+                self._on_candle_closed(candle)
+
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=POLL_INTERVAL_SECONDS)
+            except asyncio.TimeoutError:
+                pass
 
     def _on_candle_closed(self, candle: Candle) -> None:
         self._candles.append(candle)

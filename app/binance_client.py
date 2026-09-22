@@ -209,6 +209,17 @@ def get_futures_kline_stats(symbol: str, interval: str, client: httpx.Client | N
     }
 
 
+def get_futures_recent_klines(symbol: str, interval: str, limit: int = 2) -> list[list]:
+    """GET /fapi/v1/klines — startTime/endTime VERİLMEDEN, sembolün EN SON
+    `limit` mumunu döner (Binance bu durumda otomatik olarak en güncel veriyi
+    verir; son eleman genelde henüz KAPANMAMIŞ, o an oluşan mumdur). REST
+    polling ile (WebSocket akışı yerine) 'yeni bir mum kapandı mı' kontrolü
+    için kullanılır -- bkz. app.grid_trading.paper_trading."""
+    params = {"symbol": symbol, "interval": interval, "limit": limit}
+    data = _public_get("/fapi/v1/klines", params, timeout=10)
+    return data if isinstance(data, list) else []
+
+
 INTERVAL_MS_MAP = {
     "1m": 60_000,
     "3m": 180_000,
