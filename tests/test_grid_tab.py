@@ -15,10 +15,12 @@ def _candidate(symbol: str, passes: bool, **overrides) -> CandidateResult:
     defaults = dict(
         symbol=symbol,
         passes=passes,
-        spot_volume_usd=60_000_000.0,
         futures_volume_usd=250_000_000.0,
-        atr_pct=0.04,
+        atr_pct=0.03,
         adx_value=15.0,
+        rsi_value=50.0,
+        bollinger_percent_b=0.5,
+        bollinger_bandwidth=0.08,
         last_price=100.0,
         failed_reasons=[] if passes else ["volatility"],
     )

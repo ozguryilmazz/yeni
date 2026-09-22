@@ -266,13 +266,6 @@ def get_futures_24h_tickers() -> list[dict]:
     return data if isinstance(data, list) else []
 
 
-def get_spot_24h_tickers() -> list[dict]:
-    """GET /api/v3/ticker/24hr (sembol verilmeden) — TÜM spot sembolleri için
-    24 saatlik istatistikleri (quoteVolume dahil) TEK istekte döner."""
-    data = _public_get("/api/v3/ticker/24hr", timeout=15, base_url=BINANCE_BASE_URL)
-    return data if isinstance(data, list) else []
-
-
 # ---- Futures gerçek işlem (canlı) ------------------------------------------
 #
 # Bu fonksiyonlar Binance Futures MAINNET'ine (BINANCE_FUTURES_BASE_URL) gerçek

@@ -55,10 +55,11 @@ from app.workers import ComputeGridRangeWorker, RunGridBacktestWorker, RunGridSc
 RANGE_INTERVAL_LABELS = {"4h": "4 Saatlik", "1d": "Günlük"}
 BACKTEST_INTERVAL_LABELS = {"5m": "5 Dakika", "15m": "15 Dakika", "1h": "1 Saat", "4h": "4 Saatlik"}
 FAILED_REASON_LABELS = {
-    "spot_volume": "Spot Hacim",
     "futures_volume": "Futures Hacim",
-    "volatility": "Volatilite",
-    "trend": "Trend",
+    "volatility": "Volatilite (ATR%)",
+    "bollinger": "Bollinger Bant",
+    "trend": "Trend (ADX)",
+    "rsi": "RSI",
 }
 
 
@@ -83,10 +84,11 @@ def _format_number(value: float | None, decimals: int = 2) -> str:
 class GridTab(QWidget):
     """'Grid' sekmesi: 3 aşamalı grid ticareti iş akışı.
 
-    1. **Tarama**: TÜM USDT-M futures sembollerini likidite (24s hacim),
-       volatilite (ATR14/fiyat %2-%6) ve trend-olmama (ADX14<25) kurallarına
-       göre tarar (bkz. app.grid_trading.screener) — grid için uygun aday
-       coinleri bulur.
+    1. **Tarama**: TÜM USDT-M futures sembollerini likidite (24s futures hacmi
+       ≥30M$), trend-olmama (4h ADX14<28 ve günlük Bollinger Bantları),
+       dengeli volatilite (günlük ATR14/fiyat %1.5-%4.5) ve aşırı alım/satım
+       olmama (4h RSI14 40-60) kurallarına göre tarar (bkz.
+       app.grid_trading.screener) — grid için uygun aday coinleri bulur.
     2. **Aralık Hesaplama**: seçilen sembol için 3 yöntemden biriyle
        (destek/direnç, Bollinger, ATR — bkz. app.grid_trading.range_methods)
        grid'in alt/üst sınırını önerir.
@@ -130,10 +132,13 @@ class GridTab(QWidget):
         section.addWidget(QLabel("<b>1. Coin Tarama</b>"))
 
         hint = make_info_label(
-            "24s hacim (spotta ≥50M$, futures'ta ≥200M$), volatilite (günlük ATR14/fiyat "
-            "%2-%6 arası) ve trend olmama (4 saatlik ADX14<25) kriterlerine göre TÜM USDT-M "
-            "futures sembollerini tarar. Bir satıra çift tıklayarak sembolü aşağıdaki "
-            "Aralık Hesaplama ve Backtest bölümlerine seçebilirsiniz."
+            "24s futures hacmi ≥30M$ (30M-100M$ arası ideal), trend olmama (4 saatlik "
+            "ADX14<28 VE günlük Bollinger Bantları fiyatın bandın ortasında ya da yatay "
+            "sıkışmada olduğunu doğrulamalı), dengeli volatilite (günlük ATR14/fiyat "
+            "%1.5-%4.5 arası) ve aşırı alım/satım olmama (4 saatlik RSI14 40-60 arası) "
+            "kriterlerine göre TÜM USDT-M futures sembollerini tarar. Bir satıra çift "
+            "tıklayarak sembolü aşağıdaki Aralık Hesaplama ve Backtest bölümlerine "
+            "seçebilirsiniz."
         )
         hint.setWordWrap(True)
         section.addWidget(hint)
@@ -153,9 +158,9 @@ class GridTab(QWidget):
         self.screener_status_label = make_info_label("—")
         section.addWidget(self.screener_status_label)
 
-        self.screener_table = QTableWidget(0, 6)
+        self.screener_table = QTableWidget(0, 7)
         self.screener_table.setHorizontalHeaderLabels(
-            ["Sembol", "Spot Hacim", "Futures Hacim", "ATR%", "ADX", "Durum"]
+            ["Sembol", "Futures Hacim", "ATR%", "ADX", "RSI", "BB Genişliği%", "Durum"]
         )
         self.screener_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.screener_table.setSortingEnabled(True)
@@ -196,27 +201,30 @@ class GridTab(QWidget):
         for i, candidate in enumerate(rows):
             self.screener_table.setItem(i, 0, QTableWidgetItem(candidate.symbol))
             self.screener_table.setItem(
-                i, 1, NumericTableWidgetItem(candidate.spot_volume_usd or 0.0, _format_usd_compact(candidate.spot_volume_usd))
-            )
-            self.screener_table.setItem(
                 i,
-                2,
+                1,
                 NumericTableWidgetItem(
                     candidate.futures_volume_usd or 0.0, _format_usd_compact(candidate.futures_volume_usd)
                 ),
             )
             self.screener_table.setItem(
-                i, 3, NumericTableWidgetItem(candidate.atr_pct or 0.0, _format_pct(candidate.atr_pct))
+                i, 2, NumericTableWidgetItem(candidate.atr_pct or 0.0, _format_pct(candidate.atr_pct))
             )
             self.screener_table.setItem(
-                i, 4, NumericTableWidgetItem(candidate.adx_value or 0.0, _format_number(candidate.adx_value))
+                i, 3, NumericTableWidgetItem(candidate.adx_value or 0.0, _format_number(candidate.adx_value))
+            )
+            self.screener_table.setItem(
+                i, 4, NumericTableWidgetItem(candidate.rsi_value or 0.0, _format_number(candidate.rsi_value))
+            )
+            self.screener_table.setItem(
+                i, 5, NumericTableWidgetItem(candidate.bollinger_bandwidth or 0.0, _format_pct(candidate.bollinger_bandwidth))
             )
             status_text = "Uygun" if candidate.passes else ", ".join(
                 FAILED_REASON_LABELS.get(r, r) for r in candidate.failed_reasons
             )
             status_item = QTableWidgetItem(status_text)
             status_item.setForeground(QBrush(QColor("#2e7d32" if candidate.passes else "#c62828")))
-            self.screener_table.setItem(i, 5, status_item)
+            self.screener_table.setItem(i, 6, status_item)
         self.screener_table.setSortingEnabled(True)
 
     def _handle_screener_row_selected(self, row: int, _column: int) -> None:
