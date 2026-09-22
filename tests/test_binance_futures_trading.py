@@ -5,7 +5,9 @@ import pytest
 from app.binance_client import (
     BinanceAPIError,
     cancel_all_futures_open_orders,
+    cancel_futures_algo_order,
     cancel_futures_order,
+    get_futures_open_algo_orders,
     get_futures_open_orders,
     get_futures_position_risk,
     get_futures_symbol_info,
@@ -96,30 +98,36 @@ def test_place_futures_market_order_without_reduce_only():
     assert "reduceOnly" not in args[4]
 
 
-def test_place_futures_stop_loss_order_uses_close_position():
-    with patch("app.binance_client._signed_post", return_value={"orderId": 2}) as mock_post:
+def test_place_futures_stop_loss_order_uses_algo_endpoint():
+    # Binance 2025-12-09'dan itibaren koşullu emirleri (STOP_MARKET dahil) eski
+    # /fapi/v1/order'dan /fapi/v1/algoOrder'a taşımayı zorunlu kıldı -- bkz.
+    # place_futures_stop_loss_order docstring'i.
+    with patch("app.binance_client._signed_post", return_value={"algoId": 2}) as mock_post:
         place_futures_stop_loss_order("key", "secret", "BTCUSDT", "SELL", 59000.0)
 
     args, _ = mock_post.call_args
-    assert args[1] == "/fapi/v1/order"
+    assert args[1] == "/fapi/v1/algoOrder"
     assert args[4] == {
         "symbol": "BTCUSDT",
         "side": "SELL",
         "type": "STOP_MARKET",
+        "algoType": "CONDITIONAL",
         "stopPrice": 59000.0,
         "closePosition": "true",
     }
 
 
-def test_place_futures_take_profit_order_uses_close_position():
-    with patch("app.binance_client._signed_post", return_value={"orderId": 3}) as mock_post:
+def test_place_futures_take_profit_order_uses_algo_endpoint():
+    with patch("app.binance_client._signed_post", return_value={"algoId": 3}) as mock_post:
         place_futures_take_profit_order("key", "secret", "BTCUSDT", "SELL", 62000.0)
 
     args, _ = mock_post.call_args
+    assert args[1] == "/fapi/v1/algoOrder"
     assert args[4] == {
         "symbol": "BTCUSDT",
         "side": "SELL",
         "type": "TAKE_PROFIT_MARKET",
+        "algoType": "CONDITIONAL",
         "stopPrice": 62000.0,
         "closePosition": "true",
     }
@@ -132,6 +140,15 @@ def test_cancel_futures_order_sends_order_id():
     args, _ = mock_delete.call_args
     assert args[1] == "/fapi/v1/order"
     assert args[4] == {"symbol": "BTCUSDT", "orderId": 4}
+
+
+def test_cancel_futures_algo_order_sends_algo_id():
+    with patch("app.binance_client._signed_delete", return_value={"algoId": 2}) as mock_delete:
+        cancel_futures_algo_order("key", "secret", "BTCUSDT", 2)
+
+    args, _ = mock_delete.call_args
+    assert args[1] == "/fapi/v1/algoOrder"
+    assert args[4] == {"symbol": "BTCUSDT", "algoId": 2}
 
 
 def test_cancel_all_futures_open_orders_sends_symbol_only():
@@ -153,6 +170,22 @@ def test_get_futures_open_orders_returns_list():
 def test_get_futures_open_orders_defaults_to_empty_list_on_unexpected_shape():
     with patch("app.binance_client._signed_get", return_value={}):
         orders = get_futures_open_orders("key", "secret", "BTCUSDT")
+
+    assert orders == []
+
+
+def test_get_futures_open_algo_orders_returns_list():
+    with patch("app.binance_client._signed_get", return_value=[{"algoId": 1}]) as mock_get:
+        orders = get_futures_open_algo_orders("key", "secret", "BTCUSDT")
+
+    args, _ = mock_get.call_args
+    assert args[1] == "/fapi/v1/openAlgoOrders"
+    assert orders == [{"algoId": 1}]
+
+
+def test_get_futures_open_algo_orders_defaults_to_empty_list_on_unexpected_shape():
+    with patch("app.binance_client._signed_get", return_value={}):
+        orders = get_futures_open_algo_orders("key", "secret", "BTCUSDT")
 
     assert orders == []
 

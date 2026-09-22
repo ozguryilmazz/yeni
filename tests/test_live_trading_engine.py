@@ -84,8 +84,8 @@ def test_auto_mode_places_orders_immediately():
 
     with (
         patch("app.live_trading.engine.place_futures_market_order", return_value={"orderId": 1}) as mock_entry,
-        patch("app.live_trading.engine.place_futures_stop_loss_order", return_value={"orderId": 2}) as mock_sl,
-        patch("app.live_trading.engine.place_futures_take_profit_order", return_value={"orderId": 3}) as mock_tp,
+        patch("app.live_trading.engine.place_futures_stop_loss_order", return_value={"algoId": 2}) as mock_sl,
+        patch("app.live_trading.engine.place_futures_take_profit_order", return_value={"algoId": 3}) as mock_tp,
     ):
         engine._on_candle_closed(candle)
 
@@ -121,8 +121,8 @@ def test_confirm_and_execute_places_orders_for_pending_signal():
 
     with (
         patch("app.live_trading.engine.place_futures_market_order", return_value={"orderId": 1}),
-        patch("app.live_trading.engine.place_futures_stop_loss_order", return_value={"orderId": 2}),
-        patch("app.live_trading.engine.place_futures_take_profit_order", return_value={"orderId": 3}),
+        patch("app.live_trading.engine.place_futures_stop_loss_order", return_value={"algoId": 2}),
+        patch("app.live_trading.engine.place_futures_take_profit_order", return_value={"algoId": 3}),
     ):
         engine.confirm_and_execute()
 
@@ -167,14 +167,40 @@ def test_execute_signal_error_reported_and_no_open_trade():
     assert "network down" in calls["error"][0]
 
 
+def test_execute_signal_sl_tp_failure_still_tracks_open_position():
+    # Giriş (MARKET) emri borsada GERÇEKLEŞTİ ama SL/TP yerleştirilemedi (ör.
+    # ağ hatası/borsa reddi) -- pozisyon sessizce kaybolmamalı: _open_trade
+    # yine de set edilip _poll_position_loop tarafından izlenmeye devam
+    # etmeli, ve kullanıcıya pozisyonun KORUMASIZ kaldığı açıkça bildirilmeli.
+    engine, calls = _make_engine(mode="auto")
+    candle = Candle(open_time_ms=0, open=100, high=100, low=100, close=100)
+
+    with (
+        patch("app.live_trading.engine.place_futures_market_order", return_value={"orderId": 1}),
+        patch("app.live_trading.engine.place_futures_stop_loss_order", side_effect=RuntimeError("-4120")),
+        patch("app.live_trading.engine.place_futures_take_profit_order") as mock_tp,
+    ):
+        engine._on_candle_closed(candle)
+
+    mock_tp.assert_not_called()  # SL zaten patladı, TP hiç denenmemeli
+    assert engine._open_trade is not None
+    assert engine._open_trade["entry_order_id"] == 1
+    assert engine._open_trade["sl_order_id"] is None
+    assert engine._open_trade["tp_order_id"] is None
+    assert len(calls["order_placed"]) == 1  # UI yine de açık pozisyondan haberdar edilmeli
+    assert len(calls["error"]) == 1
+    assert "KORUMASIZ" in calls["error"][0]
+    assert "-4120" in calls["error"][0]
+
+
 def test_check_position_closed_detects_stop_loss_hit_and_cancels_tp():
     engine, calls = _make_engine(mode="auto")
     engine._open_trade = {"side": "LONG", "sl_order_id": 11, "tp_order_id": 22}
 
     with (
         patch("app.live_trading.engine.get_futures_position_risk", return_value=[{"positionAmt": "0"}]),
-        patch("app.live_trading.engine.get_futures_open_orders", return_value=[{"orderId": 22}]),
-        patch("app.live_trading.engine.cancel_futures_order") as mock_cancel,
+        patch("app.live_trading.engine.get_futures_open_algo_orders", return_value=[{"algoId": 22}]),
+        patch("app.live_trading.engine.cancel_futures_algo_order") as mock_cancel,
     ):
         engine._check_position_closed()
 
@@ -189,8 +215,8 @@ def test_check_position_closed_detects_take_profit_hit_and_cancels_sl():
 
     with (
         patch("app.live_trading.engine.get_futures_position_risk", return_value=[{"positionAmt": "0"}]),
-        patch("app.live_trading.engine.get_futures_open_orders", return_value=[{"orderId": 11}]),
-        patch("app.live_trading.engine.cancel_futures_order") as mock_cancel,
+        patch("app.live_trading.engine.get_futures_open_algo_orders", return_value=[{"algoId": 11}]),
+        patch("app.live_trading.engine.cancel_futures_algo_order") as mock_cancel,
     ):
         engine._check_position_closed()
 
@@ -242,6 +268,7 @@ def test_max_holding_bars_force_closes_position_after_n_bars():
 
     with (
         patch("app.live_trading.engine.cancel_all_futures_open_orders") as mock_cancel_all,
+        patch("app.live_trading.engine.cancel_futures_algo_order") as mock_cancel_algo,
         patch("app.live_trading.engine.place_futures_market_order") as mock_close_order,
     ):
         engine._on_candle_closed(Candle(open_time_ms=0, open=100, high=100, low=100, close=100))
@@ -251,6 +278,10 @@ def test_max_holding_bars_force_closes_position_after_n_bars():
         engine._on_candle_closed(Candle(open_time_ms=60_000, open=100, high=100, low=100, close=100))
 
     mock_cancel_all.assert_called_once_with("key", "secret", "BTCUSDT")
+    assert mock_cancel_algo.call_args_list == [
+        (("key", "secret", "BTCUSDT", 1), {}),
+        (("key", "secret", "BTCUSDT", 2), {}),
+    ]
     mock_close_order.assert_called_once_with("key", "secret", "BTCUSDT", "SELL", 0.1, reduce_only=True)
     assert engine._open_trade is None
     assert calls["position_closed"] == ["TIME"]

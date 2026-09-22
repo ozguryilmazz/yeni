@@ -7,9 +7,9 @@ from app.backtest.engine import Candle
 from app.binance_client import (
     INTERVAL_MS_MAP,
     cancel_all_futures_open_orders,
-    cancel_futures_order,
+    cancel_futures_algo_order,
     get_futures_historical_klines,
-    get_futures_open_orders,
+    get_futures_open_algo_orders,
     get_futures_position_risk,
     get_futures_symbol_info,
     place_futures_market_order,
@@ -216,26 +216,41 @@ class LiveTradingEngine:
 
             self.on_status(f"{signal} girişi gönderiliyor: {quantity} {self.symbol} @ piyasa")
             entry_order = place_futures_market_order(self.api_key, self.api_secret, self.symbol, entry_side, quantity)
+        except Exception as exc:  # noqa: BLE001 - gerçek para emri hatası; kullanıcıya iletilmeli
+            self.on_error(f"Emir gönderilemedi: {exc}")
+            return
 
+        # Giriş emri borsada GERÇEKLEŞTİ -- pozisyon artık gerçek ve açık.
+        # Buradan sonra SL/TP yerleştirmede bir hata olsa bile pozisyonu
+        # `_open_trade`'e yazıp izlemeye devam etmeliyiz; aksi halde uygulama
+        # bu gerçek ve koruma emri olmayan pozisyondan tamamen habersiz kalır
+        # (bkz. _poll_position_loop -- yalnızca _open_trade doluyken çalışır).
+        self._open_trade = {
+            "side": signal,
+            "entry_price": reference_price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+            "quantity": quantity,
+            "entry_order_id": entry_order.get("orderId"),
+            "sl_order_id": None,
+            "tp_order_id": None,
+            "bars_since_entry": 0,
+        }
+
+        try:
             sl_order = place_futures_stop_loss_order(self.api_key, self.api_secret, self.symbol, exit_side, stop_loss)
             tp_order = place_futures_take_profit_order(
                 self.api_key, self.api_secret, self.symbol, exit_side, take_profit
             )
+            self._open_trade["sl_order_id"] = sl_order.get("algoId")
+            self._open_trade["tp_order_id"] = tp_order.get("algoId")
+        except Exception as exc:  # noqa: BLE001 - pozisyon açık ama korumasız kaldı; kullanıcı ACİLEN bilmeli
+            self.on_error(
+                f"POZİSYON AÇILDI AMA SL/TP EMRİ GÖNDERİLEMEDİ: {exc}. Pozisyon şu an borsada "
+                f"KORUMASIZ açık — Binance uygulamasından/sitesinden manuel kontrol edin."
+            )
 
-            self._open_trade = {
-                "side": signal,
-                "entry_price": reference_price,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "quantity": quantity,
-                "entry_order_id": entry_order.get("orderId"),
-                "sl_order_id": sl_order.get("orderId"),
-                "tp_order_id": tp_order.get("orderId"),
-                "bars_since_entry": 0,
-            }
-            self.on_order_placed(dict(self._open_trade))
-        except Exception as exc:  # noqa: BLE001 - gerçek para emri hatası; kullanıcıya iletilmeli
-            self.on_error(f"Emir gönderilemedi: {exc}")
+        self.on_order_placed(dict(self._open_trade))
 
     def _force_close_on_timeout(self) -> None:
         """Strateji `max_holding_bars` tanımlıyorsa ve pozisyon SL/TP'ye
@@ -249,6 +264,8 @@ class LiveTradingEngine:
         )
         try:
             cancel_all_futures_open_orders(self.api_key, self.api_secret, self.symbol)
+            self._cancel_algo_order_safely(trade["sl_order_id"])
+            self._cancel_algo_order_safely(trade["tp_order_id"])
             exit_side = "SELL" if trade["side"] == "LONG" else "BUY"
             place_futures_market_order(
                 self.api_key, self.api_secret, self.symbol, exit_side, trade["quantity"], reduce_only=True
@@ -283,30 +300,30 @@ class LiveTradingEngine:
         self._open_trade = None
 
         try:
-            open_orders = get_futures_open_orders(self.api_key, self.api_secret, self.symbol)
+            open_orders = get_futures_open_algo_orders(self.api_key, self.api_secret, self.symbol)
         except Exception as exc:  # noqa: BLE001
             open_orders = []
             self.on_status(f"Açık emirler sorgulanamadı: {exc}")
 
-        open_order_ids = {o.get("orderId") for o in open_orders}
-        sl_still_open = trade["sl_order_id"] in open_order_ids
-        tp_still_open = trade["tp_order_id"] in open_order_ids
+        open_algo_ids = {o.get("algoId") for o in open_orders}
+        sl_still_open = trade["sl_order_id"] in open_algo_ids
+        tp_still_open = trade["tp_order_id"] in open_algo_ids
 
         if tp_still_open and not sl_still_open:
             exit_reason = "SL"
-            self._cancel_order_safely(trade["tp_order_id"])
+            self._cancel_algo_order_safely(trade["tp_order_id"])
         elif sl_still_open and not tp_still_open:
             exit_reason = "TP"
-            self._cancel_order_safely(trade["sl_order_id"])
+            self._cancel_algo_order_safely(trade["sl_order_id"])
         else:
             exit_reason = "UNKNOWN"
 
         self.on_position_closed(exit_reason)
 
-    def _cancel_order_safely(self, order_id: object) -> None:
-        if order_id is None:
+    def _cancel_algo_order_safely(self, algo_id: object) -> None:
+        if algo_id is None:
             return
         try:
-            cancel_futures_order(self.api_key, self.api_secret, self.symbol, order_id)
+            cancel_futures_algo_order(self.api_key, self.api_secret, self.symbol, algo_id)
         except Exception as exc:  # noqa: BLE001 - emir zaten kapanmış/geçersiz olabilir, kritik değil
             self.on_status(f"Kalan koruma emri iptal edilemedi (muhtemelen zaten kapanmış): {exc}")

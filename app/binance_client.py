@@ -352,39 +352,53 @@ def place_futures_market_order(
 
 
 def place_futures_stop_loss_order(api_key: str, api_secret: str, symbol: str, side: str, stop_price: float) -> dict:
-    """POST /fapi/v1/order — STOP_MARKET, closePosition=true: fiyat stop_price'a
-    değince o semboldeki TÜM açık pozisyonu piyasa fiyatından kapatır (miktar
-    belirtilmez, borsa pozisyonun tamamını kapatır). `side`, kapanış yönüdür:
-    LONG pozisyon için 'SELL', SHORT pozisyon için 'BUY'. `stop_price`,
-    çağıran tarafından round_price_to_tick_size ile yuvarlanmış olmalı."""
+    """POST /fapi/v1/algoOrder (algoType=CONDITIONAL) — STOP_MARKET, closePosition=true:
+    fiyat stop_price'a değince o semboldeki TÜM açık pozisyonu piyasa
+    fiyatından kapatır (miktar belirtilmez, borsa pozisyonun tamamını
+    kapatır). `side`, kapanış yönüdür: LONG pozisyon için 'SELL', SHORT
+    pozisyon için 'BUY'. `stop_price`, çağıran tarafından
+    round_price_to_tick_size ile yuvarlanmış olmalı.
+
+    Binance 2025-12-09'dan itibaren koşullu emirleri (STOP_MARKET/
+    TAKE_PROFIT_MARKET dahil) eski /fapi/v1/order'dan bu yeni Algo Order
+    servisine taşımayı ZORUNLU kıldı; eski endpoint bu emir tiplerini artık
+    -4120 hatasıyla reddediyor. Yanıttaki emir kimliği artık 'orderId' değil
+    'algoId' alanındadır — açık algo emirlerini sorgulamak için
+    get_futures_open_algo_orders, iptal etmek için cancel_futures_algo_order
+    kullanılmalı (düz orderId tabanlı get_futures_open_orders/
+    cancel_futures_order artık bu emirleri GÖRMEZ)."""
     params = {
         "symbol": symbol,
         "side": side,
         "type": "STOP_MARKET",
+        "algoType": "CONDITIONAL",
         "stopPrice": stop_price,
         "closePosition": "true",
     }
-    return _signed_post(BINANCE_FUTURES_BASE_URL, "/fapi/v1/order", api_key, api_secret, params)
+    return _signed_post(BINANCE_FUTURES_BASE_URL, "/fapi/v1/algoOrder", api_key, api_secret, params)
 
 
 def place_futures_take_profit_order(
     api_key: str, api_secret: str, symbol: str, side: str, stop_price: float
 ) -> dict:
-    """POST /fapi/v1/order — TAKE_PROFIT_MARKET, closePosition=true (bkz.
-    place_futures_stop_loss_order — aynı mantık, ters yönde tetiklenir)."""
+    """POST /fapi/v1/algoOrder (algoType=CONDITIONAL) — TAKE_PROFIT_MARKET,
+    closePosition=true (bkz. place_futures_stop_loss_order — aynı mantık,
+    ters yönde tetiklenir; aynı algoId/algoOrder notları geçerlidir)."""
     params = {
         "symbol": symbol,
         "side": side,
         "type": "TAKE_PROFIT_MARKET",
+        "algoType": "CONDITIONAL",
         "stopPrice": stop_price,
         "closePosition": "true",
     }
-    return _signed_post(BINANCE_FUTURES_BASE_URL, "/fapi/v1/order", api_key, api_secret, params)
+    return _signed_post(BINANCE_FUTURES_BASE_URL, "/fapi/v1/algoOrder", api_key, api_secret, params)
 
 
 def cancel_futures_order(api_key: str, api_secret: str, symbol: str, order_id: int) -> dict:
-    """DELETE /fapi/v1/order — açık bir emri iptal eder (ör. TP vurulup
-    pozisyon kapandığında borsada asılı kalan SL emrini temizlemek için)."""
+    """DELETE /fapi/v1/order — açık bir DÜZ (algo olmayan) emri iptal eder,
+    ör. bir LIMIT emrini. STOP_MARKET/TAKE_PROFIT_MARKET gibi koşullu (algo)
+    emirler için bu ARTIK ÇALIŞMAZ — bkz. cancel_futures_algo_order."""
     return _signed_delete(
         BINANCE_FUTURES_BASE_URL,
         "/fapi/v1/order",
@@ -394,16 +408,43 @@ def cancel_futures_order(api_key: str, api_secret: str, symbol: str, order_id: i
     )
 
 
+def cancel_futures_algo_order(api_key: str, api_secret: str, symbol: str, algo_id: int) -> dict:
+    """DELETE /fapi/v1/algoOrder — açık bir ALGO emrini (STOP_MARKET/
+    TAKE_PROFIT_MARKET gibi koşullu emirler, bkz. place_futures_stop_loss_order)
+    iptal eder. `algo_id`, place_futures_stop_loss_order/
+    place_futures_take_profit_order yanıtındaki 'algoId' alanıdır (orderId
+    DEĞİL)."""
+    return _signed_delete(
+        BINANCE_FUTURES_BASE_URL,
+        "/fapi/v1/algoOrder",
+        api_key,
+        api_secret,
+        {"symbol": symbol, "algoId": algo_id},
+    )
+
+
 def cancel_all_futures_open_orders(api_key: str, api_secret: str, symbol: str) -> dict:
-    """DELETE /fapi/v1/allOpenOrders — sembolün tüm açık emirlerini (SL/TP
-    dahil) tek seferde iptal eder."""
+    """DELETE /fapi/v1/allOpenOrders — sembolün tüm açık DÜZ emirlerini tek
+    seferde iptal eder. STOP_MARKET/TAKE_PROFIT_MARKET gibi algo emirlerini
+    KAPSAMAZ (bunlar artık ayrı bir kimlik uzayında/servistedir) — onları
+    iptal etmek için get_futures_open_algo_orders + cancel_futures_algo_order
+    ile tek tek dönülmeli."""
     return _signed_delete(BINANCE_FUTURES_BASE_URL, "/fapi/v1/allOpenOrders", api_key, api_secret, {"symbol": symbol})
 
 
 def get_futures_open_orders(api_key: str, api_secret: str, symbol: str) -> list[dict]:
-    """GET /fapi/v1/openOrders — sembolün açık (henüz gerçekleşmemiş/tetiklenmemiş)
-    emirlerini döner."""
+    """GET /fapi/v1/openOrders — sembolün açık DÜZ (algo olmayan,
+    henüz gerçekleşmemiş) emirlerini döner. STOP_MARKET/TAKE_PROFIT_MARKET
+    gibi algo emirleri için get_futures_open_algo_orders kullanılmalı."""
     result = _signed_get(BINANCE_FUTURES_BASE_URL, "/fapi/v1/openOrders", api_key, api_secret, {"symbol": symbol})
+    return result if isinstance(result, list) else []
+
+
+def get_futures_open_algo_orders(api_key: str, api_secret: str, symbol: str) -> list[dict]:
+    """GET /fapi/v1/openAlgoOrders — sembolün açık ALGO emirlerini (SL/TP
+    olarak yerleştirilen STOP_MARKET/TAKE_PROFIT_MARKET dahil) döner. Kimlik
+    alanı 'algoId'dir (orderId DEĞİL) — bkz. place_futures_stop_loss_order."""
+    result = _signed_get(BINANCE_FUTURES_BASE_URL, "/fapi/v1/openAlgoOrders", api_key, api_secret, {"symbol": symbol})
     return result if isinstance(result, list) else []
 
 
