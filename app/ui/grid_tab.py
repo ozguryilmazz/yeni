@@ -925,7 +925,12 @@ class GridTab(QWidget):
 
 
 def _format_ms(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%d.%m.%Y %H:%M")
+    # Yerel (sistem) saatiyle gösterir -- grafiğin kendi X eksenindeki
+    # QDateTime.fromMSecsSinceEpoch de Qt'nin varsayılanıyla yerel saat
+    # kullanır; ikisi TUTARLI olmazsa (biri UTC biri yerel) aynı grafikte iki
+    # farklı saat görünüp kullanıcıyı karıştırır (bkz. kullanıcı raporu:
+    # grafik ekseni 16:xx gösterirken başlık 13:xx gösteriyordu).
+    return datetime.fromtimestamp(ms / 1000).strftime("%d.%m.%Y %H:%M")
 
 
 def _format_chart_title(label: str, candles: list[Candle]) -> str:

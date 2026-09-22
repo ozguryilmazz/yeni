@@ -101,6 +101,7 @@ def test_handle_message_reports_malformed_message():
 
 def test_stale_connection_triggers_reconnect_when_no_messages_arrive(monkeypatch):
     monkeypatch.setattr(kline_stream_module, "STALE_CONNECTION_SECONDS", 0.05)
+    monkeypatch.setattr(kline_stream_module, "RECONNECT_BACKOFF_SECONDS", 0.05)
 
     silent_conn = _FakeWSConnection([])  # hiç mesaj yok -- bayat kalacak
     recovering_conn = _FakeWSConnection([(0, _kline_message(0, closed=True))])

@@ -17,6 +17,13 @@ yeniden bağlanılır. Aksi halde kullanıcı hiçbir hata görmeden, uzun süre
 donmuş/bayat veriyle baş başa kalabilir (bkz. app.grid_trading.paper_trading
 gibi bu sınıfı canlı grafik/durum güncellemesi için kullanan akışlar)."""
 
+RECONNECT_BACKOFF_SECONDS = 5
+"""Bayat bağlantı tespiti (STALE_CONNECTION_SECONDS) YA DA gerçek bir
+bağlantı hatası sonrası yeniden bağlanmadan önce beklenen süre -- gecikmesiz
+bir yeniden bağlanma döngüsü, sorun kalıcıysa (ör. bir ağ cihazı bu sembolün
+WS veri akışını sistematik olarak engelliyorsa) borsayı/ağ cihazını gereksiz
+yere yorabilir."""
+
 
 class KlineStreamListener:
     """`<symbol>@kline_<interval>` WebSocket akışı — her mum KAPANDIĞINDA
@@ -35,6 +42,7 @@ class KlineStreamListener:
 
     async def run(self, stop_event: asyncio.Event, on_candle_closed: Callable[[Candle], None]) -> None:
         while not stop_event.is_set():
+            needs_backoff = False
             try:
                 import websockets  # noqa: PLC0415 - opsiyonel/ağır bağımlılık, sadece kullanıldığında import edilir
 
@@ -45,8 +53,10 @@ class KlineStreamListener:
                         if idle_seconds >= STALE_CONNECTION_SECONDS:
                             self._log_error(
                                 f"{STALE_CONNECTION_SECONDS:.0f}sn'dir borsadan veri gelmedi, bağlantı "
-                                f"muhtemelen sessizce koptu — yeniden bağlanılıyor."
+                                f"muhtemelen sessizce koptu — {RECONNECT_BACKOFF_SECONDS:.0f}sn sonra "
+                                f"yeniden bağlanılacak."
                             )
+                            needs_backoff = True
                             break
                         try:
                             raw = await asyncio.wait_for(ws.recv(), timeout=min(5, STALE_CONNECTION_SECONDS - idle_seconds))
@@ -57,9 +67,18 @@ class KlineStreamListener:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - WS bağlantı hatası; yeniden denenecek
-                self._log_error(f"WS bağlantı hatası, 5sn sonra yeniden denenecek: {exc}")
+                self._log_error(
+                    f"WS bağlantı hatası, {RECONNECT_BACKOFF_SECONDS:.0f}sn sonra yeniden denenecek: {exc}"
+                )
+                needs_backoff = True
+
+            # Bayat bağlantı YA DA gerçek bir hata sonrası aynı bekleme
+            # uygulanır -- aksi halde (ör. ağ kalıcı olarak veri iletmiyorsa)
+            # yeniden bağlanma gecikmesiz bir döngüye girip borsayı/ağ
+            # cihazını gereksiz yere yeniden bağlanma istekleriyle yorabilir.
+            if needs_backoff and not stop_event.is_set():
                 try:
-                    await asyncio.wait_for(stop_event.wait(), timeout=5)
+                    await asyncio.wait_for(stop_event.wait(), timeout=RECONNECT_BACKOFF_SECONDS)
                 except asyncio.TimeoutError:
                     pass
 
