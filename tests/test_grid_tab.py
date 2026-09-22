@@ -175,6 +175,11 @@ def test_successful_range_computation_fills_bounds_and_passes_method_kwargs(qapp
     expected_series_count = 1 + (tab.grid_count_input.value() - 1) + 2
     assert len(tab.range_chart.series()) == expected_series_count
 
+    # Grafik başlığı hangi zaman dilimini gösterdiğini belirtmeli -- Aralık ve
+    # Backtest grafikleri farklı ayarlar kullanabildiğinden (bkz. hangisine
+    # bakıldığını karıştırmama amacı) bu ayrım önemli.
+    assert "4 Saatlik" in tab.range_chart.title()
+
 
 def test_range_chart_is_cleared_when_computation_returns_no_candles(qapp):
     grid_range = GridRange(method="atr", lower_price=85.0, upper_price=115.0, details={})
@@ -275,6 +280,7 @@ def test_successful_backtest_renders_summary_trade_table_and_chart(qapp):
     # Grafik: mum + 3 ara grid seviyesi + alt/üst sınır -- likidasyon YOK, 3. bir
     # referans çizgisi (likidasyon) eklenmemeli.
     assert len(tab.backtest_chart.series()) == 1 + 3 + 2
+    assert "15 Dakika" in tab.backtest_chart.title()
 
 
 def test_liquidated_backtest_shows_warning_and_liquidation_chart_line(qapp):

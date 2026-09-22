@@ -404,6 +404,7 @@ class GridTab(QWidget):
             inner_levels = grid_levels[1:-1]
         except ValueError:
             inner_levels = []
+        interval_label = RANGE_INTERVAL_LABELS.get(self.range_interval_combo.currentData(), "")
         self._render_price_chart(
             self.range_chart,
             candles,
@@ -412,6 +413,7 @@ class GridTab(QWidget):
                 (grid_range.upper_price, "Üst Sınır", "#ef6c00"),
             ],
             grid_lines=inner_levels,
+            title=_format_chart_title(f"Aralık önizlemesi — {interval_label}", candles),
         )
 
     def _render_price_chart(
@@ -420,10 +422,15 @@ class GridTab(QWidget):
         candles: list[Candle],
         bound_lines: list[tuple[float, str, str]],
         grid_lines: list[float] | None = None,
+        title: str = "",
     ) -> None:
         """Mum grafiği + öne çıkan (kalın/renkli, `bound_lines`) referans
         çizgileri + istenirse (`grid_lines`) aradaki TÜM grid seviyelerini
-        ince gri çizgilerle çizer."""
+        ince gri çizgilerle çizer. `title`, grafiğin hangi zaman dilimi/
+        aralığı gösterdiğini belirtir -- Aralık Hesaplama ve Grid Backtest
+        grafikleri BAĞIMSIZ ayarlar (farklı zaman dilimi/pencere)
+        kullandığından, hangisine baktığınızı karıştırmamak için."""
+        chart.setTitle(title)
         chart.removeAllSeries()
         for axis in chart.axes():
             chart.removeAxis(axis)
@@ -675,7 +682,14 @@ class GridTab(QWidget):
         ]
         if result.liquidation is not None:
             bound_lines.append((result.liquidation.liquidation_price, "Likidasyon", "#b71c1c"))
-        self._render_price_chart(self.backtest_chart, candles, bound_lines=bound_lines, grid_lines=inner_levels)
+        interval_label = BACKTEST_INTERVAL_LABELS.get(self.backtest_interval_combo.currentData(), "")
+        self._render_price_chart(
+            self.backtest_chart,
+            candles,
+            bound_lines=bound_lines,
+            grid_lines=inner_levels,
+            title=_format_chart_title(f"Grid Backtest — {interval_label}", candles),
+        )
 
     def _render_backtest_summary(self, result: GridBacktestResult) -> None:
         pnl_color = "#2e7d32" if result.total_pnl_usd >= 0 else "#c62828"
@@ -733,3 +747,9 @@ class GridTab(QWidget):
 
 def _format_ms(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%d.%m.%Y %H:%M")
+
+
+def _format_chart_title(label: str, candles: list[Candle]) -> str:
+    if not candles:
+        return label
+    return f"{label} ({_format_ms(candles[0].open_time_ms)} - {_format_ms(candles[-1].open_time_ms)})"
