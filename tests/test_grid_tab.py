@@ -1,4 +1,4 @@
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PySide6.QtGui import QGuiApplication
@@ -317,3 +317,130 @@ def test_backtest_error_shows_warning_and_reenables_button(qapp):
 
     mock_warning.assert_called_once()
     assert tab.run_backtest_button.isEnabled()
+
+
+# ---- Kağıt İşlem (İleri Test) ----------------------------------------------
+
+
+def test_start_paper_trading_warns_when_symbol_is_empty(qapp):
+    tab = GridTab()
+    tab.symbol_input.setText("")
+
+    with patch("app.ui.grid_tab.QMessageBox.warning") as mock_warning:
+        tab._handle_start_paper_trading()
+
+    mock_warning.assert_called_once()
+    assert tab._paper_thread is None
+
+
+def test_start_paper_trading_warns_when_lower_bound_is_not_below_upper(qapp):
+    tab = GridTab()
+    tab.lower_price_input.setValue(110.0)
+    tab.upper_price_input.setValue(100.0)
+
+    with patch("app.ui.grid_tab.QMessageBox.warning") as mock_warning:
+        tab._handle_start_paper_trading()
+
+    mock_warning.assert_called_once()
+    assert tab._paper_thread is None
+
+
+def test_start_paper_trading_creates_thread_with_shared_settings_and_updates_ui(qapp):
+    mock_thread = MagicMock()
+    with patch("app.ui.grid_tab.GridPaperTradingThread", return_value=mock_thread) as mock_thread_cls:
+        tab = GridTab()
+        tab.symbol_input.setText("ethusdt")
+        tab.lower_price_input.setValue(90.0)
+        tab.upper_price_input.setValue(110.0)
+        tab.grid_count_input.setValue(10)
+        tab.capital_input.setValue(500.0)
+        tab.leverage_input.setValue(5)
+        tab.fee_rate_input.setValue(0.05)
+        tab.maintenance_margin_input.setValue(0.4)
+        tab._handle_start_paper_trading()
+
+    mock_thread_cls.assert_called_once()
+    args = mock_thread_cls.call_args.args
+    assert args[0] == "ETHUSDT"
+    assert args[2] == pytest.approx(90.0)
+    assert args[3] == pytest.approx(110.0)
+    assert args[4] == 10
+    assert args[5] == pytest.approx(500.0)
+    assert args[6] == 5
+    assert args[7] == pytest.approx(0.0005)
+    assert args[8] == pytest.approx(0.004)
+
+    mock_thread.start.assert_called_once()
+    assert tab._paper_thread is mock_thread
+    assert not tab.start_paper_button.isEnabled()
+    assert tab.stop_paper_button.isEnabled()
+    assert not tab.lower_price_input.isEnabled()
+
+
+def test_stop_paper_trading_stops_thread_and_resets_ui(qapp):
+    tab = GridTab()
+    mock_thread = MagicMock()
+    tab._paper_thread = mock_thread
+    tab._set_paper_running_ui(True)
+
+    tab._handle_stop_paper_trading()
+
+    mock_thread.stop.assert_called_once()
+    mock_thread.wait.assert_called_once()
+    assert tab._paper_thread is None
+    assert tab.start_paper_button.isEnabled()
+    assert not tab.stop_paper_button.isEnabled()
+
+
+def test_stop_paper_trading_public_method_is_noop_when_not_running(qapp):
+    tab = GridTab()
+    tab.stop_paper_trading()  # hiçbir kağıt işlem çalışmıyorken hata vermemeli
+    assert tab._paper_thread is None
+
+
+def test_paper_snapshot_renders_summary_chart_and_trades(qapp):
+    trade = GridTrade(
+        buy_price=90.0,
+        sell_price=95.0,
+        quantity=1.0,
+        buy_time_ms=0,
+        sell_time_ms=60_000,
+        gross_pnl_usd=5.0,
+        fees_usd=0.037,
+        net_pnl_usd=4.963,
+    )
+    result = _grid_backtest_result(trades=[trade])
+    candles = _backtest_candles()
+
+    tab = GridTab()
+    tab._on_paper_snapshot(result, candles)
+
+    assert tab._paper_result is result
+    assert "1" in tab.paper_summary_label.text()  # Tamamlanan İşlem: 1
+    assert tab.paper_trade_table.rowCount() == 1
+    assert tab.paper_trade_table.item(0, 1).text() == "90.000000"
+    assert len(tab.paper_chart.series()) == 1 + 3 + 2
+    assert "Kağıt İşlem" in tab.paper_chart.title()
+
+
+def test_paper_liquidated_shows_warning(qapp):
+    liquidation = GridLiquidation(
+        time_ms=0, liquidation_price=92.5, position_qty=15.0, avg_entry_price=98.0, margin_lost_usd=1.5
+    )
+    result = _grid_backtest_result(liquidation=liquidation)
+
+    tab = GridTab()
+    with patch("app.ui.grid_tab.QMessageBox.warning") as mock_warning:
+        tab._on_paper_liquidated(result)
+
+    mock_warning.assert_called_once()
+    assert "92.5" in mock_warning.call_args.args[2]
+
+
+def test_paper_error_shows_warning(qapp):
+    tab = GridTab()
+    with patch("app.ui.grid_tab.QMessageBox.warning") as mock_warning:
+        tab._on_paper_error("boom")
+
+    mock_warning.assert_called_once()
+    assert "boom" in mock_warning.call_args.args[2]

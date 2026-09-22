@@ -123,6 +123,159 @@ class GridBacktestResult:
     liquidation: GridLiquidation | None
 
 
+@dataclass
+class GridEngineState:
+    """Bir grid motorunun (geçmiş veri backtest'i VEYA canlı kağıt işlem)
+    ANLIK durumu — run_grid_backtest'in döngü içi değişkenlerinin, tek
+    seferde bir mum işleyip durabilecek şekilde paketlenmiş hali. bkz.
+    start_grid_engine/advance_grid_engine/snapshot_grid_engine: bu üçü,
+    run_grid_backtest (geçmiş veri) ile app.grid_trading.paper_trading
+    (canlı kağıt işlem/forward test) arasında AYNI dolum/likidasyon
+    matematiğinin paylaşılmasını sağlar."""
+
+    levels: list[float]
+    qty_per_grid: float
+    fee_rate: float
+    capital_usd: float
+    leverage: float
+    maintenance_margin_rate: float
+    pending_buys: set[int]
+    pending_sells: dict[int, tuple[float, int]]
+    fills: list[GridFill]
+    trades: list[GridTrade]
+    start_price: float
+    start_time_ms: int
+    min_price_seen: float
+    max_price_seen: float
+    liquidation: GridLiquidation | None = None
+
+
+def start_grid_engine(
+    reference_price: float,
+    reference_time_ms: int,
+    lower_price: float,
+    upper_price: float,
+    grid_count: int,
+    capital_usd: float,
+    leverage: float = DEFAULT_LEVERAGE,
+    fee_rate: float = DEFAULT_FEE_RATE,
+    maintenance_margin_rate: float = DEFAULT_MAINTENANCE_MARGIN_RATE,
+) -> GridEngineState:
+    """Bir grid motorunu `reference_price`'a göre kurar: seviyeleri inşa
+    eder, `qty_per_grid`'i hesaplar, `reference_price`'ın ALTINDAKİ
+    seviyelere AL, ÜSTÜNDEKİ seviyelere (kurulumda piyasadan alınmış kabul
+    edilip) SAT emri seed'ler (bkz. run_grid_backtest docstring'indeki
+    gerekçe). HİÇBİR mum işlemez — bkz. advance_grid_engine."""
+    if capital_usd <= 0:
+        raise ValueError("capital_usd pozitif olmalı")
+    if leverage <= 0:
+        raise ValueError("leverage pozitif olmalı")
+
+    levels = build_grid_levels(lower_price, upper_price, grid_count)
+    qty_per_grid = (capital_usd * leverage / grid_count) / reference_price
+
+    pending_buys: set[int] = set()
+    pending_sells: dict[int, tuple[float, int]] = {}
+    fills: list[GridFill] = []
+
+    for i, level in enumerate(levels):
+        if level < reference_price:
+            pending_buys.add(i)
+        elif level > reference_price:
+            pending_sells[i] = (reference_price, reference_time_ms)
+            fills.append(
+                GridFill(
+                    side="BUY", time_ms=reference_time_ms, price=reference_price, quantity=qty_per_grid, fee_rate=fee_rate
+                )
+            )
+
+    return GridEngineState(
+        levels=levels,
+        qty_per_grid=qty_per_grid,
+        fee_rate=fee_rate,
+        capital_usd=capital_usd,
+        leverage=leverage,
+        maintenance_margin_rate=maintenance_margin_rate,
+        pending_buys=pending_buys,
+        pending_sells=pending_sells,
+        fills=fills,
+        trades=[],
+        start_price=reference_price,
+        start_time_ms=reference_time_ms,
+        min_price_seen=reference_price,
+        max_price_seen=reference_price,
+    )
+
+
+def advance_grid_engine(state: GridEngineState, candle: Candle) -> GridLiquidation | None:
+    """Tek bir (yeni kapanmış) mumu motora işler, `state`'i YERİNDE
+    günceller. Motor zaten likide olmuşsa (state.liquidation dolu) hiçbir
+    şey yapmaz, sadece o likidasyonu döner — likide olmuş bir grid'in
+    kendiliğinden yeniden başlaması beklenmez (bkz. run_grid_backtest
+    docstring'i: elle yeniden başlatılması gerekir)."""
+    if state.liquidation is not None:
+        return state.liquidation
+
+    state.min_price_seen = min(state.min_price_seen, candle.low)
+    state.max_price_seen = max(state.max_price_seen, candle.high)
+    liquidation = _process_candle(
+        candle, state.levels, state.pending_buys, state.pending_sells, state.qty_per_grid,
+        state.fee_rate, state.trades, state.fills, state.capital_usd, state.maintenance_margin_rate,
+    )
+    if liquidation:
+        state.liquidation = liquidation
+    return liquidation
+
+
+def snapshot_grid_engine(state: GridEngineState, last_price: float, last_time_ms: int) -> GridBacktestResult:
+    """`state`'in o anki anlık görüntüsünü run_grid_backtest ile AYNI sonuç
+    şekline (GridBacktestResult) döker — UI render kodu (bkz.
+    app.ui.grid_tab) hem geçmiş backtest hem canlı kağıt işlem için
+    değişiklik gerektirmeden kullanılabilsin diye. `last_price`/
+    `last_time_ms`, likidasyon YOKSA envanterin mark-to-market
+    değerlenmesinde 'güncel fiyat' olarak kullanılır (likidasyon varsa
+    onun yerine likidasyon fiyatı kullanılır — bkz. run_grid_backtest)."""
+    fees_usd = sum(f.price * f.quantity * f.fee_rate for f in state.fills)
+    realized_pnl_usd = sum(t.net_pnl_usd for t in state.trades)
+
+    final_inventory_qty = len(state.pending_sells) * state.qty_per_grid
+    cost_basis_usd = sum(
+        buy_price * state.qty_per_grid * (1 + state.fee_rate) for buy_price, _ in state.pending_sells.values()
+    )
+    end_price = state.liquidation.liquidation_price if state.liquidation else last_price
+    final_inventory_value_usd = final_inventory_qty * end_price
+    unrealized_pnl_usd = final_inventory_value_usd - cost_basis_usd
+
+    total_pnl_usd = -state.capital_usd if state.liquidation else realized_pnl_usd + unrealized_pnl_usd
+
+    return GridBacktestResult(
+        grid_levels=state.levels,
+        trades=list(state.trades),
+        fills=list(state.fills),
+        realized_pnl_usd=realized_pnl_usd,
+        unrealized_pnl_usd=unrealized_pnl_usd,
+        total_pnl_usd=total_pnl_usd,
+        fees_usd=fees_usd,
+        capital_usd=state.capital_usd,
+        leverage=state.leverage,
+        fee_rate=state.fee_rate,
+        maintenance_margin_rate=state.maintenance_margin_rate,
+        qty_per_grid=state.qty_per_grid,
+        final_inventory_qty=final_inventory_qty,
+        final_inventory_value_usd=final_inventory_value_usd,
+        start_price=state.start_price,
+        end_price=end_price,
+        min_price_seen=state.min_price_seen,
+        max_price_seen=state.max_price_seen,
+        breached_lower=state.min_price_seen <= state.levels[0],
+        breached_upper=state.max_price_seen >= state.levels[-1],
+        open_buy_levels=sorted(state.levels[i] for i in state.pending_buys),
+        open_sell_levels=sorted(state.levels[i] for i in state.pending_sells),
+        liquidated=state.liquidation is not None,
+        liquidation=state.liquidation,
+    )
+
+
 def run_grid_backtest(
     candles: list[Candle],
     lower_price: float,
@@ -182,83 +335,19 @@ def run_grid_backtest(
     tamamı (sadece net yönü değil) dolum kontrolüne dahil olur."""
     if not candles:
         raise ValueError("Backtest için en az bir mum gerekli")
-    if capital_usd <= 0:
-        raise ValueError("capital_usd pozitif olmalı")
-    if leverage <= 0:
-        raise ValueError("leverage pozitif olmalı")
 
-    levels = build_grid_levels(lower_price, upper_price, grid_count)
-    start_price = candles[0].open
-    start_time_ms = candles[0].open_time_ms
-    qty_per_grid = (capital_usd * leverage / grid_count) / start_price
+    state = start_grid_engine(
+        candles[0].open, candles[0].open_time_ms, lower_price, upper_price, grid_count,
+        capital_usd, leverage, fee_rate, maintenance_margin_rate,
+    )
 
-    pending_buys: set[int] = set()
-    pending_sells: dict[int, tuple[float, int]] = {}  # sell_level_index -> (buy_price, buy_time_ms)
-    fills: list[GridFill] = []
-    trades: list[GridTrade] = []
-
-    for i, level in enumerate(levels):
-        if level < start_price:
-            pending_buys.add(i)
-        elif level > start_price:
-            pending_sells[i] = (start_price, start_time_ms)
-            fills.append(
-                GridFill(side="BUY", time_ms=start_time_ms, price=start_price, quantity=qty_per_grid, fee_rate=fee_rate)
-            )
-
-    min_price_seen = start_price
-    max_price_seen = start_price
     last_candle = candles[0]
-    liquidation: GridLiquidation | None = None
-
     for candle in candles:
         last_candle = candle
-        min_price_seen = min(min_price_seen, candle.low)
-        max_price_seen = max(max_price_seen, candle.high)
-        liquidation = _process_candle(
-            candle, levels, pending_buys, pending_sells, qty_per_grid, fee_rate,
-            trades, fills, capital_usd, maintenance_margin_rate,
-        )
-        if liquidation:
+        if advance_grid_engine(state, candle):
             break
 
-    fees_usd = sum(f.price * f.quantity * f.fee_rate for f in fills)
-    realized_pnl_usd = sum(t.net_pnl_usd for t in trades)
-
-    final_inventory_qty = len(pending_sells) * qty_per_grid
-    cost_basis_usd = sum(buy_price * qty_per_grid * (1 + fee_rate) for buy_price, _ in pending_sells.values())
-    end_price = liquidation.liquidation_price if liquidation else last_candle.close
-    final_inventory_value_usd = final_inventory_qty * end_price
-    unrealized_pnl_usd = final_inventory_value_usd - cost_basis_usd
-
-    total_pnl_usd = -capital_usd if liquidation else realized_pnl_usd + unrealized_pnl_usd
-
-    return GridBacktestResult(
-        grid_levels=levels,
-        trades=trades,
-        fills=fills,
-        realized_pnl_usd=realized_pnl_usd,
-        unrealized_pnl_usd=unrealized_pnl_usd,
-        total_pnl_usd=total_pnl_usd,
-        fees_usd=fees_usd,
-        capital_usd=capital_usd,
-        leverage=leverage,
-        fee_rate=fee_rate,
-        maintenance_margin_rate=maintenance_margin_rate,
-        qty_per_grid=qty_per_grid,
-        final_inventory_qty=final_inventory_qty,
-        final_inventory_value_usd=final_inventory_value_usd,
-        start_price=start_price,
-        end_price=end_price,
-        min_price_seen=min_price_seen,
-        max_price_seen=max_price_seen,
-        breached_lower=min_price_seen <= levels[0],
-        breached_upper=max_price_seen >= levels[-1],
-        open_buy_levels=sorted(levels[i] for i in pending_buys),
-        open_sell_levels=sorted(levels[i] for i in pending_sells),
-        liquidated=liquidation is not None,
-        liquidation=liquidation,
-    )
+    return snapshot_grid_engine(state, last_candle.close, last_candle.open_time_ms)
 
 
 def _compute_available_margin(capital_usd: float, fills: list[GridFill], trades: list[GridTrade]) -> float:

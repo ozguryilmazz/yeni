@@ -48,9 +48,11 @@ class MainWindow(QMainWindow):
         return header
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        # Tuzak Skoru ve Canlı İşlem sekmeleri açık bir WebSocket/asyncio thread'i
-        # tutuyor olabilir; pencere kapanmadan önce bunların düzgün sonlanmasını sağla.
-        # Canlı İşlem'in durdurulması borsadaki açık SL/TP emirlerini İPTAL ETMEZ.
+        # Tuzak Skoru, Canlı İşlem ve Grid (kağıt işlem) sekmeleri açık bir
+        # WebSocket/asyncio thread'i tutuyor olabilir; pencere kapanmadan önce
+        # bunların düzgün sonlanmasını sağla. Canlı İşlem'in durdurulması
+        # borsadaki açık SL/TP emirlerini İPTAL ETMEZ.
         self.whale_trap_tab.stop_tracking()
         self.live_trading_tab.stop_tracking()
+        self.grid_tab.stop_paper_trading()
         super().closeEvent(event)

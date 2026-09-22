@@ -38,6 +38,7 @@ from app.grid_trading.grid import (
     GridBacktestResult,
     build_grid_levels,
 )
+from app.grid_trading.paper_qt_bridge import GridPaperTradingThread
 from app.grid_trading.range_methods import DEFAULT_RANGE_METHOD, RANGE_METHOD_LABELS, GridRange
 from app.grid_trading.screener import CandidateResult, ScreenerCriteria
 from app.grid_trading.service import (
@@ -82,7 +83,7 @@ def _format_number(value: float | None, decimals: int = 2) -> str:
 
 
 class GridTab(QWidget):
-    """'Grid' sekmesi: 3 aşamalı grid ticareti iş akışı.
+    """'Grid' sekmesi: 4 aşamalı grid ticareti iş akışı.
 
     1. **Tarama**: TÜM USDT-M futures sembollerini likidite (24s futures hacmi
        ≥30M$), trend-olmama (4h ADX14<28 ve günlük Bollinger Bantları),
@@ -95,23 +96,31 @@ class GridTab(QWidget):
     3. **Grid Backtest**: önerilen (veya elle girilen) sınırlar, grid sayısı
        ve sermaye ile geçmiş veri üzerinde AL/SAT dolum simülasyonu çalıştırır
        (bkz. app.grid_trading.grid).
+    4. **Kağıt İşlem (İleri Test)**: 3. bölümdeki AYNI ayarlarla, AYNI dolum
+       matematiğiyle, ama geçmiş veri yerine CANLI piyasa verisiyle ve SAHTE
+       parayla çalışır (bkz. app.grid_trading.paper_trading) — backtest
+       sonuçlarının canlıda da tutarlı olduğunu gerçek para riske atmadan
+       doğrulamak içindir.
 
-    Bu sekme SADECE simülasyon yapar — gerçek para ile canlı grid emri
-    göndermez (bu, ayrı bir sonraki adımdır)."""
+    3. ve 4. bölümler SADECE simülasyon yapar — gerçek para ile canlı grid
+    emri GÖNDERMEZ (bu, ayrı bir sonraki adımdır)."""
 
     def __init__(self) -> None:
         super().__init__()
         self._screener_worker: RunGridScreenerWorker | None = None
         self._range_worker: ComputeGridRangeWorker | None = None
         self._backtest_worker: RunGridBacktestWorker | None = None
+        self._paper_thread: GridPaperTradingThread | None = None
         self._screener_results: list[CandidateResult] = []
         self._backtest_result: GridBacktestResult | None = None
+        self._paper_result: GridBacktestResult | None = None
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
         content_layout.addLayout(self._build_screener_section())
         content_layout.addLayout(self._build_range_section())
         content_layout.addLayout(self._build_backtest_section())
+        content_layout.addLayout(self._build_paper_trading_section())
 
         # Bu sekmede çok sayıda bölüm (tarama tablosu, grafik, backtest formu +
         # sonuç tablosu) alt alta dizili -- pencere boyunu kolayca aşabiliyor.
@@ -673,9 +682,12 @@ class GridTab(QWidget):
     def _on_backtest_finished(self, preview: BacktestPreview) -> None:
         self.run_backtest_button.setEnabled(True)
         self._backtest_result = preview.result
-        self._render_backtest_summary(preview.result)
-        self._render_grid_trades(preview.result)
-        self._render_backtest_chart(preview.candles, preview.result)
+        self._render_grid_summary(self.backtest_summary_label, preview.result)
+        self._render_grid_trades(self.grid_trade_table, preview.result)
+        interval_label = BACKTEST_INTERVAL_LABELS.get(self.backtest_interval_combo.currentData(), "")
+        self._render_grid_chart(
+            self.backtest_chart, preview.candles, preview.result, f"Grid Backtest — {interval_label}"
+        )
 
     def _on_backtest_error(self, message: str) -> None:
         self.run_backtest_button.setEnabled(True)
@@ -683,7 +695,13 @@ class GridTab(QWidget):
         self.backtest_summary_label.setText("—")
         QMessageBox.warning(self, "Grid backtest çalıştırılamadı", message)
 
-    def _render_backtest_chart(self, candles: list[Candle], result: GridBacktestResult) -> None:
+    def _render_grid_chart(
+        self, chart: QChart, candles: list[Candle], result: GridBacktestResult, title_label: str
+    ) -> None:
+        """Bir GridBacktestResult'ı (geçmiş backtest VEYA canlı kağıt işlem
+        anlık görüntüsü — ikisi de AYNI şekli paylaşır, bkz.
+        app.grid_trading.grid.snapshot_grid_engine) grafiğe döker; hem
+        _on_backtest_finished hem _on_paper_snapshot tarafından kullanılır."""
         inner_levels = result.grid_levels[1:-1]
         bound_lines = [
             (result.grid_levels[0], "Alt Sınır", "#1565c0"),
@@ -691,16 +709,15 @@ class GridTab(QWidget):
         ]
         if result.liquidation is not None:
             bound_lines.append((result.liquidation.liquidation_price, "Likidasyon", "#b71c1c"))
-        interval_label = BACKTEST_INTERVAL_LABELS.get(self.backtest_interval_combo.currentData(), "")
         self._render_price_chart(
-            self.backtest_chart,
+            chart,
             candles,
             bound_lines=bound_lines,
             grid_lines=inner_levels,
-            title=_format_chart_title(f"Grid Backtest — {interval_label}", candles),
+            title=_format_chart_title(title_label, candles),
         )
 
-    def _render_backtest_summary(self, result: GridBacktestResult) -> None:
+    def _render_grid_summary(self, label: QLabel, result: GridBacktestResult) -> None:
         pnl_color = "#2e7d32" if result.total_pnl_usd >= 0 else "#c62828"
         realized_color = "#2e7d32" if result.realized_pnl_usd >= 0 else "#c62828"
         unrealized_color = "#2e7d32" if result.unrealized_pnl_usd >= 0 else "#c62828"
@@ -741,17 +758,161 @@ class GridTab(QWidget):
                 "<span style='color:#c62828;'>Fiyat, aralık boyunca en az bir kez ÜST sınırın üstüne çıktı "
                 "— bu yöndeki SAT emirleri tükendi.</span>"
             )
-        self.backtest_summary_label.setText("<br>".join(lines))
+        label.setText("<br>".join(lines))
 
-    def _render_grid_trades(self, result: GridBacktestResult) -> None:
-        self.grid_trade_table.setRowCount(len(result.trades))
+    def _render_grid_trades(self, table: QTableWidget, result: GridBacktestResult) -> None:
+        table.setRowCount(len(result.trades))
         for i, trade in enumerate(result.trades):
-            self.grid_trade_table.setItem(i, 0, QTableWidgetItem(_format_ms(trade.buy_time_ms)))
-            self.grid_trade_table.setItem(i, 1, QTableWidgetItem(f"{trade.buy_price:,.6f}"))
-            self.grid_trade_table.setItem(i, 2, QTableWidgetItem(_format_ms(trade.sell_time_ms)))
-            self.grid_trade_table.setItem(i, 3, QTableWidgetItem(f"{trade.sell_price:,.6f}"))
-            self.grid_trade_table.setItem(i, 4, QTableWidgetItem(f"{trade.quantity:,.6f}"))
-            self.grid_trade_table.setItem(i, 5, QTableWidgetItem(f"{trade.net_pnl_usd:+,.4f}"))
+            table.setItem(i, 0, QTableWidgetItem(_format_ms(trade.buy_time_ms)))
+            table.setItem(i, 1, QTableWidgetItem(f"{trade.buy_price:,.6f}"))
+            table.setItem(i, 2, QTableWidgetItem(_format_ms(trade.sell_time_ms)))
+            table.setItem(i, 3, QTableWidgetItem(f"{trade.sell_price:,.6f}"))
+            table.setItem(i, 4, QTableWidgetItem(f"{trade.quantity:,.6f}"))
+            table.setItem(i, 5, QTableWidgetItem(f"{trade.net_pnl_usd:+,.4f}"))
+
+    # ---- 4. Kağıt İşlem (İleri Test) --------------------------------------
+
+    def _build_paper_trading_section(self) -> QVBoxLayout:
+        section = QVBoxLayout()
+        section.addWidget(QLabel("<b>4. Kağıt İşlem (İleri Test)</b>"))
+
+        hint = make_info_label(
+            "Yukarıdaki (3. bölüm) AYNI sembol/sınır/grid sayısı/sermaye/kaldıraç/komisyon/"
+            "bakım marjini/zaman dilimi ayarlarıyla, AYNI dolum ve likidasyon matematiğiyle "
+            "çalışır — tek fark, mumların geçmişten değil CANLI piyasadan gelmesidir. Hiçbir "
+            "gerçek emir gönderilmez, Binance API key gerekmez. Başlar başlamaz anlık fiyattan "
+            "grid kurulur; sonrasında seçili zaman diliminde her mum kapanışında özet/grafik/"
+            "işlem tablosu güncellenir. Likidasyon gerçekleşirse (backtest'teki gibi) motor "
+            "kendiliğinden durur — yeniden başlatmak için 'Kağıt İşlem Başlat'a tekrar basmanız "
+            "gerekir. Amaç: backtest sonuçlarının canlı piyasada da tutarlı olduğunu, gerçek "
+            "para riske atmadan doğrulamaktır (ileri test/forward test)."
+        )
+        hint.setWordWrap(True)
+        section.addWidget(hint)
+
+        controls = QHBoxLayout()
+        self.start_paper_button = QPushButton("Kağıt İşlem Başlat")
+        self.start_paper_button.clicked.connect(self._handle_start_paper_trading)
+        controls.addWidget(self.start_paper_button)
+
+        self.stop_paper_button = QPushButton("Durdur")
+        self.stop_paper_button.setEnabled(False)
+        self.stop_paper_button.clicked.connect(self._handle_stop_paper_trading)
+        controls.addWidget(self.stop_paper_button)
+        controls.addStretch()
+        section.addLayout(controls)
+
+        self.paper_status_label = make_info_label("—")
+        section.addWidget(self.paper_status_label)
+
+        self.paper_summary_label = make_info_label("—")
+        self.paper_summary_label.setWordWrap(True)
+        section.addWidget(self.paper_summary_label)
+
+        self.paper_chart = QChart()
+        self.paper_chart.legend().hide()
+        self.paper_chart_view = QChartView(self.paper_chart)
+        self.paper_chart_view.setFixedHeight(320)
+        section.addWidget(self.paper_chart_view)
+
+        self.paper_trade_table = QTableWidget(0, 6)
+        self.paper_trade_table.setHorizontalHeaderLabels(
+            ["Alış Zamanı", "Alış Fiyatı", "Satış Zamanı", "Satış Fiyatı", "Miktar", "Net K/Z (USD)"]
+        )
+        self.paper_trade_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        section.addWidget(self.paper_trade_table)
+
+        return section
+
+    def _handle_start_paper_trading(self) -> None:
+        if self._paper_thread is not None:
+            return
+        symbol = self.symbol_input.text().strip().upper()
+        if not symbol:
+            QMessageBox.warning(self, "Kağıt İşlem", "Bir sembol girin (ör. BTCUSDT)")
+            return
+        if self.lower_price_input.value() >= self.upper_price_input.value():
+            QMessageBox.warning(self, "Kağıt İşlem", "Alt sınır, üst sınırdan küçük olmalı")
+            return
+
+        self.paper_status_label.setText("Başlatılıyor…")
+        self.paper_summary_label.setText("—")
+        self.paper_trade_table.setRowCount(0)
+        self._paper_result = None
+
+        self._paper_thread = GridPaperTradingThread(
+            symbol,
+            self.backtest_interval_combo.currentData(),
+            self.lower_price_input.value(),
+            self.upper_price_input.value(),
+            self.grid_count_input.value(),
+            self.capital_input.value(),
+            self.leverage_input.value(),
+            self.fee_rate_input.value() / 100,
+            self.maintenance_margin_input.value() / 100,
+        )
+        self._paper_thread.status.connect(self._on_paper_status)
+        self._paper_thread.snapshot_updated.connect(self._on_paper_snapshot)
+        self._paper_thread.liquidated.connect(self._on_paper_liquidated)
+        self._paper_thread.error.connect(self._on_paper_error)
+        self._paper_thread.finished.connect(self._on_paper_thread_finished)
+        self._paper_thread.start()
+
+        self._set_paper_running_ui(True)
+
+    def _handle_stop_paper_trading(self) -> None:
+        if self._paper_thread is None:
+            return
+        self._paper_thread.stop()
+        self._paper_thread.wait(5000)
+        self._paper_thread = None
+        self._set_paper_running_ui(False)
+        self.paper_status_label.setText("Durduruldu.")
+
+    def _on_paper_thread_finished(self) -> None:
+        self._paper_thread = None
+        self._set_paper_running_ui(False)
+
+    def _set_paper_running_ui(self, running: bool) -> None:
+        self.start_paper_button.setEnabled(not running)
+        self.stop_paper_button.setEnabled(running)
+        self.lower_price_input.setEnabled(not running)
+        self.upper_price_input.setEnabled(not running)
+        self.grid_count_input.setEnabled(not running)
+        self.capital_input.setEnabled(not running)
+        self.leverage_input.setEnabled(not running)
+        self.fee_rate_input.setEnabled(not running)
+        self.maintenance_margin_input.setEnabled(not running)
+        self.backtest_interval_combo.setEnabled(not running)
+
+    def stop_paper_trading(self) -> None:
+        """Ana pencere kapanırken (closeEvent) thread'in düzgün sonlanması
+        için çağrılır; kağıt işlem zaten durduysa bir şey yapmaz. Gerçek
+        emir hiç gönderilmediğinden borsada temizlenecek bir şey yoktur."""
+        if self._paper_thread is not None:
+            self._handle_stop_paper_trading()
+
+    def _on_paper_status(self, message: str) -> None:
+        self.paper_status_label.setText(message)
+
+    def _on_paper_snapshot(self, result: GridBacktestResult, candles: list[Candle]) -> None:
+        self._paper_result = result
+        interval_label = BACKTEST_INTERVAL_LABELS.get(self.backtest_interval_combo.currentData(), "")
+        self._render_grid_summary(self.paper_summary_label, result)
+        self._render_grid_trades(self.paper_trade_table, result)
+        self._render_grid_chart(self.paper_chart, candles, result, f"Kağıt İşlem — {interval_label}")
+
+    def _on_paper_liquidated(self, result: GridBacktestResult) -> None:
+        liq = result.liquidation
+        QMessageBox.warning(
+            self,
+            "Kağıt İşlem — Likide Oldu",
+            f"Kağıt işlem {liq.liquidation_price:,.6f} fiyatında likide oldu ve durduruldu "
+            f"(gerçek para değildir). Detaylar için özet paneline bakın.",
+        )
+
+    def _on_paper_error(self, message: str) -> None:
+        QMessageBox.warning(self, "Kağıt işlem hatası", message)
 
 
 def _format_ms(ms: int) -> str:
