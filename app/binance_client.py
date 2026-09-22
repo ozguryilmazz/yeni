@@ -24,13 +24,50 @@ def _sign(params: dict, api_secret: str) -> dict:
     return {**params, "signature": signature}
 
 
-def _raise_for_error(response: httpx.Response) -> None:
-    if response.status_code != 200:
+MAX_RATE_LIMIT_RETRIES = 3
+"""429 (istek limiti aşıldı) GEÇİCİDİR -- kısa bir bekleme sonrası genelde
+çözülür, bu yüzden otomatik olarak yeniden denenir (bkz. _request_with_retry).
+418 (IP otomatik yasaklandı) ASLA yeniden denenmez -- 429'ları görmezden
+gelmeye devam etmenin cezasıdır, tekrar denemek yasağı UZATABİLİR."""
+
+
+def _request_with_retry(client: httpx.Client, method: str, path: str, **kwargs) -> httpx.Response:
+    """`client.get/post/delete(path, **kwargs)`'i (method'a göre) çağırır;
+    Binance 429 (Too Many Requests) döndürürse `Retry-After` başlığına göre
+    (yoksa üstel artan kısa bir süre) bekleyip en fazla
+    MAX_RATE_LIMIT_RETRIES kez tekrar dener. Tarama (screener) ve piyasa
+    genel görünümü gibi yüzlerce sembole paralel istek atan akışlar bu
+    limite en çok çarpan yerlerdir."""
+    send = getattr(client, method.lower())
+    response = send(path, **kwargs)
+    for attempt in range(MAX_RATE_LIMIT_RETRIES):
+        if response.status_code != 429:
+            return response
         try:
-            data = response.json()
+            wait_seconds = float(response.headers.get("Retry-After", ""))
         except ValueError:
-            data = {}
-        raise BinanceAPIError(data.get("msg", "Binance API isteği başarısız oldu"), data.get("code"))
+            wait_seconds = 2.0**attempt
+        time.sleep(max(wait_seconds, 0.1))
+        response = send(path, **kwargs)
+    return response
+
+
+def _raise_for_error(response: httpx.Response) -> None:
+    if response.status_code == 200:
+        return
+    try:
+        data = response.json()
+    except ValueError:
+        data = {}
+    message = data.get("msg", "Binance API isteği başarısız oldu")
+    retry_after = response.headers.get("Retry-After")
+    if response.status_code == 418:
+        suffix = f" ({retry_after} saniye sonra tekrar deneyin)" if retry_after else ""
+        message = f"IP adresi Binance tarafından geçici olarak engellendi{suffix}: {message}"
+    elif response.status_code == 429:
+        suffix = f" ({retry_after} saniye sonra)" if retry_after else ""
+        message = f"Binance istek limiti aşıldı, otomatik yeniden deneme de başarısız oldu{suffix}: {message}"
+    raise BinanceAPIError(message, data.get("code"))
 
 
 def _signed_get(
@@ -41,7 +78,7 @@ def _signed_get(
     headers = {"X-MBX-APIKEY": api_key}
 
     with httpx.Client(base_url=base_url, timeout=10) as client:
-        response = client.get(path, params=params, headers=headers)
+        response = _request_with_retry(client, "GET", path, params=params, headers=headers)
 
     _raise_for_error(response)
     return response.json()
@@ -55,7 +92,7 @@ def _signed_post(
     headers = {"X-MBX-APIKEY": api_key}
 
     with httpx.Client(base_url=base_url, timeout=10) as client:
-        response = client.post(path, params=params, headers=headers)
+        response = _request_with_retry(client, "POST", path, params=params, headers=headers)
 
     _raise_for_error(response)
     return response.json()
@@ -69,7 +106,7 @@ def _signed_delete(
     headers = {"X-MBX-APIKEY": api_key}
 
     with httpx.Client(base_url=base_url, timeout=10) as client:
-        response = client.delete(path, params=params, headers=headers)
+        response = _request_with_retry(client, "DELETE", path, params=params, headers=headers)
 
     _raise_for_error(response)
     return response.json()
@@ -115,7 +152,7 @@ def _public_get(
     path: str, params: dict | None = None, timeout: float = 10, base_url: str = BINANCE_FUTURES_BASE_URL
 ) -> dict | list:
     with httpx.Client(base_url=base_url, timeout=timeout) as client:
-        response = client.get(path, params=params)
+        response = _request_with_retry(client, "GET", path, params=params)
     _raise_for_error(response)
     return response.json()
 
@@ -143,7 +180,7 @@ def get_futures_kline_stats(symbol: str, interval: str, client: httpx.Client | N
     o paylaşılan bağlantı havuzu kullanılır; verilmezse tek seferlik bir istemci açılır."""
     params = {"symbol": symbol, "interval": interval, "limit": 2}
     if client is not None:
-        response = client.get("/fapi/v1/klines", params=params)
+        response = _request_with_retry(client, "GET", "/fapi/v1/klines", params=params)
         _raise_for_error(response)
         result = response.json()
     else:
@@ -194,9 +231,18 @@ def get_futures_historical_klines(
     """GET /fapi/v1/klines — [start_ms, end_ms] aralığındaki TÜM mumları sayfalayarak
     çeker (tek istek en fazla 1500 mum döner). Backtest için geçmiş veri toplarken
     kullanılır; `get_futures_kline_stats`'in aksine sınırsız uzunlukta bir aralığı
-    kapsayabilir."""
+    kapsayabilir.
+
+    `limit` her sayfada [cursor, end_ms] aralığında GERÇEKTEN kalan mum
+    sayısına göre (1500'ü aşmayacak şekilde) hesaplanır -- Binance'in bu
+    endpoint'teki istek ağırlığı `limit` parametresiyle ölçeklenir, yani
+    (ör. tarama/screener'ın istediği ~120 mumluk kısa bir pencere için) hep
+    1500 göndermek, gerçekte ihtiyaç olandan çok daha fazla ağırlık
+    harcatır. Yüzlerce sembol için paralel çağrıldığında (bkz.
+    app.grid_trading.screener._fetch_candles_for_symbols) bu fark, IP'nin
+    Binance'in dakikalık istek/ağırlık limitini (429) aşıp aşmaması
+    arasındaki farkı yaratabilir."""
     interval_ms = INTERVAL_MS_MAP[interval]
-    limit = 1500
     owns_client = client is None
     if owns_client:
         client = httpx.Client(base_url=BINANCE_FUTURES_BASE_URL, timeout=15)
@@ -205,8 +251,10 @@ def get_futures_historical_klines(
     try:
         cursor = start_ms
         while cursor <= end_ms:
+            remaining_candles = (end_ms - cursor) // interval_ms + 1
+            limit = min(1500, max(1, remaining_candles))
             params = {"symbol": symbol, "interval": interval, "startTime": cursor, "endTime": end_ms, "limit": limit}
-            response = client.get("/fapi/v1/klines", params=params)
+            response = _request_with_retry(client, "GET", "/fapi/v1/klines", params=params)
             _raise_for_error(response)
             batch = response.json()
             if not batch:

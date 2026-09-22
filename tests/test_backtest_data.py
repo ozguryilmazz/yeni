@@ -60,3 +60,28 @@ def test_empty_first_page_returns_empty_list():
 
     assert result == []
     assert len(client.calls) == 1
+
+
+def test_limit_is_sized_to_remaining_window_not_always_1500():
+    # Kısa bir pencere (ör. screener'ın ihtiyaç duyduğu ~120 mumluk tarama)
+    # için 1500 değil, gerçekte kalan mum sayısı kadar limit gönderilmeli --
+    # Binance'in bu endpoint'teki istek ağırlığı limit'e göre ölçeklendiğinden
+    # bu, yüzlerce sembol taranırken gereksiz ağırlık/rate-limit maliyetini
+    # önler (bkz. get_futures_historical_klines docstring'i).
+    page = [_kline(i * 300_000) for i in range(10)]
+    client = FakeClient([page])
+
+    get_futures_historical_klines("BTCUSDT", "5m", 0, 9 * 300_000, client=client)
+
+    assert client.calls[0]["limit"] == 10
+
+
+def test_limit_is_capped_at_1500_for_a_wide_window():
+    limit = 1500
+    first_page = [_kline(i * 300_000) for i in range(limit)]
+    second_page = [_kline((limit + i) * 300_000) for i in range(3)]
+    client = FakeClient([first_page, second_page])
+
+    get_futures_historical_klines("BTCUSDT", "5m", 0, (limit + 3) * 300_000, client=client)
+
+    assert client.calls[0]["limit"] == 1500
