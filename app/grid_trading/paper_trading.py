@@ -3,7 +3,7 @@ import time
 from collections.abc import Callable
 
 from app.backtest.engine import Candle
-from app.binance_client import get_futures_kline_stats
+from app.binance_client import INTERVAL_MS_MAP, get_futures_kline_stats
 from app.grid_trading.grid import (
     DEFAULT_FEE_RATE,
     DEFAULT_LEVERAGE,
@@ -109,7 +109,29 @@ class GridPaperTradingEngine:
             f"(o 'piyasa alımının' komisyon maliyeti kadar); bu bir kayıp değil, normaldir.</span>"
         )
         self.on_status(f"{self.symbol} {self.interval} mum kapanışları izleniyor…")
-        self.on_snapshot(snapshot_grid_engine(self._state, reference_price, reference_time_ms), [])
+        # İlk mum kapanışı (zaman dilimine göre dakikalarca) beklenmeden grafik/grid
+        # çizgileri hemen görünsün diye, henüz gerçek mum yokken başlangıç fiyatında
+        # düz (open=high=low=close) iki 'yer tutucu' mum kullanılır -- bunlar sadece
+        # çizim ekseni için bir zaman aralığı sağlar, self._candles'a EKLENMEZ (ilk
+        # gerçek mum geldiğinde grafik sahte veri karışmadan gerçek veriye geçer)."""
+        interval_ms = INTERVAL_MS_MAP[self.interval]
+        placeholder_candles = [
+            Candle(
+                open_time_ms=reference_time_ms,
+                open=reference_price,
+                high=reference_price,
+                low=reference_price,
+                close=reference_price,
+            ),
+            Candle(
+                open_time_ms=reference_time_ms + interval_ms,
+                open=reference_price,
+                high=reference_price,
+                low=reference_price,
+                close=reference_price,
+            ),
+        ]
+        self.on_snapshot(snapshot_grid_engine(self._state, reference_price, reference_time_ms), placeholder_candles)
 
         listener = KlineStreamListener(self.symbol, self.interval, on_error=self.on_status)
         await listener.run(stop_event, self._on_candle_closed)

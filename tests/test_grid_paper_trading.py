@@ -146,7 +146,14 @@ def test_run_sets_up_grid_at_reference_price_and_emits_initial_snapshot():
 
     assert len(calls["snapshot"]) == 1
     result, candles = calls["snapshot"][0]
-    assert candles == []
+    # Gerçek mum henüz gelmedi ama grafik/grid çizgileri hemen görünsün diye
+    # başlangıç fiyatında düz iki 'yer tutucu' mum verilmeli (bkz.
+    # GridPaperTradingEngine.run) -- _render_price_chart en az bir mum
+    # olmadan hiçbir şey çizmiyor (bkz. app.ui.grid_tab).
+    assert len(candles) == 2
+    assert candles[0].open == pytest.approx(100.0)
+    assert candles[0].close == pytest.approx(100.0)
+    assert candles[1].open_time_ms > candles[0].open_time_ms
     assert result.grid_levels[0] == pytest.approx(90.0)
     assert result.grid_levels[-1] == pytest.approx(110.0)
 
