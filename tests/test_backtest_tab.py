@@ -1,5 +1,9 @@
+import os
+import time as time_module
+from datetime import datetime, timezone
 from unittest.mock import patch
 
+from PySide6.QtCore import QDateTime
 from PySide6.QtGui import QGuiApplication
 
 from app.backtest.engine import BacktestResult, Trade
@@ -133,6 +137,39 @@ def test_run_passes_selected_interval_to_backtest_comparison(qapp):
         qapp.processEvents()
 
     assert mock_comparison.call_args.kwargs["interval"] == "1h"
+
+
+def test_run_converts_local_datetime_input_to_utc_not_just_relabels_it(qapp):
+    # QDateTimeEdit.dateTime().toPython() kullanıcının GİRDİĞİ (sistemin
+    # yerel saat diliminde yorumlanan) naive bir datetime döner -- bunun
+    # UTC'ye sadece ETİKETLENMEDİĞİNİ, gerçekten DÖNÜŞTÜRÜLDÜĞÜNÜ doğrulamak
+    # için işlemin yerel saat dilimini geçici olarak İstanbul'a (UTC+3, yaz
+    # saati uygulaması olmayan sabit bir ofset) alıyoruz.
+    original_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "Europe/Istanbul"
+    time_module.tzset()
+    try:
+        with patch("app.workers.run_backtest_comparison") as mock_comparison:
+            tab = BacktestTab()
+            tab.start_input.setDateTime(QDateTime(2026, 6, 1, 16, 0, 0))
+            tab.end_input.setDateTime(QDateTime(2026, 6, 1, 18, 0, 0))
+
+            tab._handle_run()
+            tab._worker.wait()
+            qapp.processEvents()
+
+        captured_start = mock_comparison.call_args.args[1]
+        captured_end = mock_comparison.call_args.args[2]
+    finally:
+        if original_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = original_tz
+        time_module.tzset()
+
+    # Yerel (İstanbul) 16:00 -> UTC 13:00 olmalı (16:00 UTC DEĞİL).
+    assert captured_start == datetime(2026, 6, 1, 13, 0, 0, tzinfo=timezone.utc)
+    assert captured_end == datetime(2026, 6, 1, 15, 0, 0, tzinfo=timezone.utc)
 
 
 def test_strategy_combo_defaults_to_the_registered_default_strategy(qapp):

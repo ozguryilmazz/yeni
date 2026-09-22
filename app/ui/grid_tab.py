@@ -652,8 +652,13 @@ class GridTab(QWidget):
             QMessageBox.warning(self, "Grid Backtest", "Alt sınır, üst sınırdan küçük olmalı")
             return
 
-        start = self.start_input.dateTime().toPython().replace(tzinfo=timezone.utc)
-        end = self.end_input.dateTime().toPython().replace(tzinfo=timezone.utc)
+        # QDateTimeEdit.dateTime().toPython() kullanıcının GİRDİĞİ (sistemin
+        # yerel saat diliminde yorumlanan) naive bir datetime döner.
+        # .replace(tzinfo=...) bunu dönüştürmez, sadece etiket yapıştırır --
+        # .astimezone(...) ise naive değeri doğru şekilde 'yerel saat' kabul
+        # edip UTC'ye ÇEVİRİR (bkz. Python datetime dokümantasyonu).
+        start = self.start_input.dateTime().toPython().astimezone(timezone.utc)
+        end = self.end_input.dateTime().toPython().astimezone(timezone.utc)
         if start >= end:
             QMessageBox.warning(self, "Grid Backtest", "Başlangıç tarihi bitiş tarihinden önce olmalı")
             return
