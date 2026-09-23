@@ -168,9 +168,8 @@ class GridPaperTradingEngine:
         kadar zaten kapanmış son muma göre önceden ayarlıyoruz -- motor, ilk
         gerçek kapanışla tıpkı WebSocket akışındaki gibi başlar."""
         try:
-            now_ms = int(time.time() * 1000)
             raw_klines = get_futures_recent_klines(self.symbol, self.interval, limit=2)
-            closed = [k for k in raw_klines if int(k[6]) <= now_ms]
+            closed = raw_klines[:-1]  # bkz. _poll_loop -- son eleman her zaman kapanmamış sayılır
             if closed:
                 self._last_closed_open_time_ms = int(closed[-1][0])
         except Exception as exc:  # noqa: BLE001 - ağ hatası; ilk poll turu kendi hatasını raporlayıp yine de devam eder
@@ -189,12 +188,14 @@ class GridPaperTradingEngine:
                 self.on_status(f"Mum verisi çekilemedi, {POLL_INTERVAL_SECONDS:.0f}sn sonra tekrar denenecek: {exc}")
                 raw_klines = []
 
-            now_ms = int(time.time() * 1000)
-            for k in raw_klines:
+            # Binance, startTime/endTime VERİLMEDEN çağrıldığında SON elemanı her
+            # zaman henüz kapanmamış (o an oluşan) mum olarak döner (bkz.
+            # get_futures_recent_klines docstring'i) -- kapanma kontrolü için
+            # yerel saate (time.time()) ihtiyaç yok. Bu, makinenin saati Binance
+            # sunucu saatinden kaysa bile (ör. NTP senkronu bozuksa) doğru çalışır;
+            # eski kod close_time_ms<=now_ms ile yerel saate kıyaslıyordu.
+            for k in raw_klines[:-1]:
                 open_time_ms = int(k[0])
-                close_time_ms = int(k[6])
-                if close_time_ms > now_ms:
-                    break  # sıralı geldiği için henüz kapanmayan bu mumdan sonrakiler de kapanmamıştır
                 if self._last_closed_open_time_ms is not None and open_time_ms <= self._last_closed_open_time_ms:
                     continue  # daha önce işlendi
                 candle = Candle(
@@ -208,10 +209,27 @@ class GridPaperTradingEngine:
                 self._last_closed_open_time_ms = open_time_ms
                 self._on_candle_closed(candle)
 
+            # Yüksek zaman dilimlerinde (1h/4h/1d) ilk mum kapanana kadar uzunca
+            # bir süre hiçbir güncelleme olmaması kullanıcıya botun takıldığı
+            # izlenimini verebiliyordu -- botun çalıştığını ve sadece sıradaki
+            # kapanışı beklediğini göstermek için durum mesajına kalan süre
+            # eklenir. Likidasyon/durdurma nedeniyle döngüden zaten çıkılacaksa
+            # (stop_event set edildiyse) o mesajın üzerine yazılmaz.
+            if raw_klines and not stop_event.is_set():
+                self._update_waiting_status(raw_klines[-1])
+
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=POLL_INTERVAL_SECONDS)
             except asyncio.TimeoutError:
                 pass
+
+    def _update_waiting_status(self, forming_kline: list) -> None:
+        close_time_ms = int(forming_kline[6])
+        remaining_ms = close_time_ms - int(time.time() * 1000)
+        self.on_status(
+            f"{self.symbol} {self.interval} mum kapanışları izleniyor… "
+            f"(sıradaki kapanış: ~{_format_remaining_time(remaining_ms)})"
+        )
 
     def _on_candle_closed(self, candle: Candle) -> None:
         self._candles.append(candle)
@@ -230,3 +248,20 @@ class GridPaperTradingEngine:
             self.on_liquidated(result)
             if self._stop_event is not None:
                 self._stop_event.set()
+
+
+def _format_remaining_time(remaining_ms: int) -> str:
+    """Kalan süreyi en büyük ANLAMLI birimden başlayarak ('Xsa Ydk' / 'Xdk Ysn' /
+    'Xsn') okunur bir metne çevirir -- ör. '4h' zaman diliminde saniye
+    hassasiyeti gereksiz/kalabalık olurdu (bkz. _update_waiting_status).
+    Negatif değer (ör. yerel saat Binance sunucu saatinden geride kaldıysa)
+    '0sn' olarak gösterilir -- sıradaki pollda zaten yeni kapanmış mum
+    yakalanacaktır."""
+    remaining_s = max(0, remaining_ms // 1000)
+    hours, rem_s = divmod(remaining_s, 3600)
+    minutes, seconds = divmod(rem_s, 60)
+    if hours:
+        return f"{hours}sa {minutes}dk"
+    if minutes:
+        return f"{minutes}dk {seconds}sn"
+    return f"{seconds}sn"

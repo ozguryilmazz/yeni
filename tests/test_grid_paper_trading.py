@@ -6,7 +6,7 @@ import pytest
 
 from app.backtest.engine import Candle
 from app.grid_trading.grid import start_grid_engine
-from app.grid_trading.paper_trading import MAX_CHART_CANDLES, GridPaperTradingEngine
+from app.grid_trading.paper_trading import MAX_CHART_CANDLES, GridPaperTradingEngine, _format_remaining_time
 
 
 def _candle(open_time_ms: int, open_: float, high: float, low: float, close: float) -> Candle:
@@ -246,10 +246,16 @@ def test_poll_loop_after_priming_only_processes_candles_closed_after_watermark()
     engine, calls = _started_engine()
     now_ms = int(time.time() * 1000)
     already_closed = _kline(0, 100.0, 101.0, 99.0, 100.5, close_time_ms=now_ms - 1000)
+    # get_futures_recent_klines'ın döndürdüğü listede SON eleman her zaman
+    # henüz kapanmamış (oluşmakta olan) mum sayılır (bkz. _poll_loop) -- bu
+    # yüzden already_closed'ın "kapanmış" sayılması için ardından bir mum
+    # daha gelmesi gerekir, aksi halde already_closed kendisi 'son eleman'
+    # olur ve kapanmamış sayılıp hiç işlenmez.
+    forming = _kline(300_000, 100.5, 102.0, 100.0, 101.0, close_time_ms=now_ms + 999_000)
 
     with patch(
         "app.grid_trading.paper_trading.get_futures_recent_klines",
-        return_value=[already_closed],
+        return_value=[already_closed, forming],
     ):
         engine._prime_last_closed_candle()
 
@@ -260,7 +266,7 @@ def test_poll_loop_after_priming_only_processes_candles_closed_after_watermark()
 
         def fake_recent_klines(symbol, interval, limit):
             stop_event.set()
-            return [already_closed]  # aynı mum -- artık 'daha önce işlendi' sayılmalı
+            return [already_closed, forming]  # aynı kapanmış mum -- artık 'daha önce işlendi' sayılmalı
 
         with patch("app.grid_trading.paper_trading.get_futures_recent_klines", side_effect=fake_recent_klines):
             await engine._poll_loop(stop_event)
@@ -324,13 +330,17 @@ def test_poll_loop_processes_multiple_missed_candles_in_order():
     now_ms = int(time.time() * 1000)
     first = _kline(0, 100.0, 101.0, 99.0, 100.5, close_time_ms=now_ms - 10_000)
     second = _kline(300_000, 100.5, 102.0, 100.0, 101.0, close_time_ms=now_ms - 5_000)
+    # Son eleman her zaman henüz kapanmamış sayılır (bkz. _poll_loop) -- first
+    # VE second'ın ikisinin de 'kapanmış' sayılması için ardından bir mum daha
+    # (oluşmakta olan) gelmesi gerekir.
+    forming = _kline(600_000, 101.0, 103.0, 100.5, 102.0, close_time_ms=now_ms + 999_000)
 
     async def scenario():
         stop_event = asyncio.Event()
 
         def fake_recent_klines(symbol, interval, limit):
             stop_event.set()
-            return [first, second]
+            return [first, second, forming]
 
         with patch("app.grid_trading.paper_trading.get_futures_recent_klines", side_effect=fake_recent_klines):
             await engine._poll_loop(stop_event)
@@ -364,6 +374,107 @@ def test_poll_loop_reports_status_on_fetch_error_and_does_not_crash():
     assert calls["snapshot"] == []
     assert len(calls["status"]) == 1
     assert "network kaboom" in calls["status"][0]
+
+
+def test_format_remaining_time_formats_by_largest_meaningful_unit():
+    assert _format_remaining_time(45_000) == "45sn"
+    assert _format_remaining_time(90_000) == "1dk 30sn"
+    assert _format_remaining_time(3_661_000) == "1sa 1dk"  # saat basamağına geçince saniye gösterilmez
+    assert _format_remaining_time(0) == "0sn"
+    # Negatif (ör. yerel saat Binance sunucu saatinden geride kaldıysa) 0'a kırpılır --
+    # bir sonraki pollda zaten yeni kapanmış mum yakalanacaktır.
+    assert _format_remaining_time(-5_000) == "0sn"
+
+
+def test_update_waiting_status_reports_remaining_time_until_forming_candle_closes():
+    engine, calls = _started_engine()
+    fake_now_s = 1_700_000_000.0
+    forming_kline = _kline(0, 100.0, 101.0, 99.0, 100.5, close_time_ms=int(fake_now_s * 1000) + 125_000)
+
+    with patch("time.time", return_value=fake_now_s):
+        engine._update_waiting_status(forming_kline)
+
+    assert len(calls["status"]) == 1
+    assert "2dk 5sn" in calls["status"][0]
+    assert "sıradaki kapanış" in calls["status"][0]
+
+
+def test_poll_loop_updates_waiting_status_with_countdown_after_processing():
+    engine, calls = _started_engine()
+    now_ms = int(time.time() * 1000)
+    forming = _kline(0, 100.0, 101.0, 99.0, 100.5, close_time_ms=now_ms + 40_000)
+
+    async def scenario():
+        stop_event = asyncio.Event()
+
+        # stop_event, _update_waiting_status'un KENDİSİ on_status'u çağırdıktan
+        # SONRA set edilmeli -- aksi halde (ör. fetch sırasında set edilirse)
+        # _poll_loop'taki 'not stop_event.is_set()' koruması bu çağrıyı hiç
+        # yapmadan döngüden çıkar (bkz. test_poll_loop_does_not_overwrite_
+        # liquidation_status_with_countdown -- aynı koruma orada test ediliyor).
+        def stop_after_status(message):
+            calls["status"].append(message)
+            stop_event.set()
+
+        engine.on_status = stop_after_status
+
+        with patch("app.grid_trading.paper_trading.get_futures_recent_klines", return_value=[forming]):
+            await engine._poll_loop(stop_event)
+
+    asyncio.run(scenario())
+
+    assert calls["snapshot"] == []  # henüz kapanmadı
+    assert len(calls["status"]) == 1
+    assert "sıradaki kapanış" in calls["status"][0]
+
+
+def test_poll_loop_skips_waiting_status_when_no_klines_returned():
+    # Ağ hatası nedeniyle raw_klines boşsa (zaten kendi hata mesajı raporlandı),
+    # geri sayım mesajı bunun üzerine yazıp hatayı gizlememeli.
+    engine, calls = _started_engine()
+
+    async def scenario():
+        stop_event = asyncio.Event()
+
+        def failing_fetch(symbol, interval, limit):
+            stop_event.set()
+            raise RuntimeError("network kaboom")
+
+        with patch("app.grid_trading.paper_trading.get_futures_recent_klines", side_effect=failing_fetch):
+            await engine._poll_loop(stop_event)
+
+    asyncio.run(scenario())
+
+    assert len(calls["status"]) == 1
+    assert "network kaboom" in calls["status"][0]
+
+
+def test_poll_loop_does_not_overwrite_liquidation_status_with_countdown():
+    # _update_waiting_status, likidasyonun AZ ÖNCE yazdığı 'LİKİDE OLDU' durum
+    # mesajının üzerine yazmamalı -- stop_event likidasyonla set edildiğinde
+    # aynı poll turunda bir daha çağrılmamalı.
+    engine, calls = _make_engine(lower_price=90.0, upper_price=110.0, grid_count=2, capital_usd=100.0, leverage=20.0)
+    engine._state = start_grid_engine(
+        100.0, 0, 90.0, 110.0, 2, 100.0, leverage=20.0, fee_rate=0.0005, maintenance_margin_rate=0.005
+    )
+    now_ms = int(time.time() * 1000)
+    crash = _kline(1, 100.0, 100.0, 50.0, 60.0, close_time_ms=now_ms - 1000)  # sert düşüş -> likidasyon
+    forming = _kline(2, 60.0, 65.0, 55.0, 62.0, close_time_ms=now_ms + 200_000)
+
+    async def scenario():
+        stop_event = asyncio.Event()
+        engine._stop_event = stop_event
+
+        with patch(
+            "app.grid_trading.paper_trading.get_futures_recent_klines",
+            return_value=[crash, forming],
+        ):
+            await engine._poll_loop(stop_event)
+
+    asyncio.run(scenario())
+
+    assert any("LİKİDE" in message for message in calls["status"])
+    assert calls["status"][-1].startswith("LİKİDE")  # geri sayım mesajı üzerine yazılmadı
 
 
 def test_on_candle_closed_advances_state_and_emits_snapshot_with_accumulated_candles():
