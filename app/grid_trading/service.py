@@ -17,7 +17,9 @@ from app.grid_trading.range_methods import DEFAULT_RANGE_METHOD, GridRange, comp
 DEFAULT_RANGE_INTERVAL = "4h"
 DEFAULT_RANGE_LOOKBACK_CANDLES = 120
 """ATR(14)/Bollinger(20)/destek-direnç kümelemesi için yeterden fazla ısınma
-mumu; 4h'de ~20 gün, 1d'de ~4 ay geçmiş."""
+mumu; 5m'de ~10 saat, 15m'de ~1.25 gün, 1h'de ~5 gün, 4h'de ~20 gün, 1d'de
+~4 ay geçmiş -- daha kısa zaman dilimlerinde bu, önemli ölçüde DAHA DAR bir
+tarihsel pencere anlamına gelir (grid aralığı da buna göre dar çıkabilir)."""
 SUPPORTED_GRID_INTERVALS = ["1m", "5m", "15m", "1h", "4h"]
 DEFAULT_GRID_BACKTEST_INTERVAL = "15m"
 DEFAULT_CAPITAL_USD = 1000.0
