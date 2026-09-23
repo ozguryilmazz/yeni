@@ -120,6 +120,11 @@ class GridTab(QWidget):
         self._screener_results: list[CandidateResult] = []
         self._backtest_result: GridBacktestResult | None = None
         self._paper_result: GridBacktestResult | None = None
+        self._paper_last_ticker_price: float | None = None
+        """Fiyat göstergesinin (bkz. _render_price_ticker) yön/renk kararı için
+        bir önceki güncellemenin fiyatı -- her yeni kağıt işlem başlangıcında
+        sıfırlanır (bkz. _handle_start_paper_trading), önceki oturumdan kalan
+        bir fiyatla yanlış yön göstermesin diye."""
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
@@ -634,12 +639,21 @@ class GridTab(QWidget):
         self.backtest_summary_label.setWordWrap(True)
         section.addWidget(self.backtest_summary_label)
 
+        section.addWidget(QLabel("<b>Açık Pozisyonlar</b> (backtest sonunda hâlâ satılmamış envanter)"))
+        self.backtest_open_positions_table = QTableWidget(0, 6)
+        self.backtest_open_positions_table.setHorizontalHeaderLabels(
+            ["Alış Zamanı", "Alış Fiyatı", "Hedef Satış", "Güncel Fiyat", "Miktar", "Anlık K/Z (USD)"]
+        )
+        self.backtest_open_positions_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        section.addWidget(self.backtest_open_positions_table)
+
         self.backtest_chart = QChart()
         self.backtest_chart.legend().hide()
         self.backtest_chart_view = QChartView(self.backtest_chart)
         self.backtest_chart_view.setFixedHeight(320)
         section.addWidget(self.backtest_chart_view)
 
+        section.addWidget(QLabel("<b>Tamamlanan İşlemler</b>"))
         self.grid_trade_table = QTableWidget(0, 6)
         self.grid_trade_table.setHorizontalHeaderLabels(
             ["Alış Zamanı", "Alış Fiyatı", "Satış Zamanı", "Satış Fiyatı", "Miktar", "Net K/Z (USD)"]
@@ -671,6 +685,7 @@ class GridTab(QWidget):
 
         self.run_backtest_button.setEnabled(False)
         self.backtest_summary_label.setText("Çalışıyor…")
+        self.backtest_open_positions_table.setRowCount(0)
         self.grid_trade_table.setRowCount(0)
 
         self._backtest_worker = RunGridBacktestWorker(
@@ -694,6 +709,7 @@ class GridTab(QWidget):
         self.run_backtest_button.setEnabled(True)
         self._backtest_result = preview.result
         self._render_grid_summary(self.backtest_summary_label, preview.result)
+        self._render_open_positions(self.backtest_open_positions_table, preview.result)
         self._render_grid_trades(self.grid_trade_table, preview.result)
         interval_label = BACKTEST_INTERVAL_LABELS.get(self.backtest_interval_combo.currentData(), "")
         self._render_grid_chart(
@@ -785,6 +801,40 @@ class GridTab(QWidget):
             table.setItem(i, 4, QTableWidgetItem(f"{trade.quantity:,.6f}"))
             table.setItem(i, 5, QTableWidgetItem(f"{trade.net_pnl_usd:+,.4f}"))
 
+    def _render_open_positions(self, table: QTableWidget, result: GridBacktestResult) -> None:
+        """Şu an elde tutulan (henüz satılmamış) her grid hücresini ayrı bir
+        satır olarak listeler -- hem backtest (bölüm 3, sonuçtaki final durum)
+        hem kağıt işlem (bölüm 4, her güncellemede tazelenir) tarafından
+        paylaşılır (bkz. app.grid_trading.grid.OpenGridPosition)."""
+        table.setRowCount(len(result.open_positions))
+        for i, pos in enumerate(result.open_positions):
+            table.setItem(i, 0, QTableWidgetItem(_format_ms(pos.buy_time_ms)))
+            table.setItem(i, 1, QTableWidgetItem(f"{pos.buy_price:,.6f}"))
+            table.setItem(i, 2, QTableWidgetItem(f"{pos.sell_price:,.6f}"))
+            table.setItem(i, 3, QTableWidgetItem(f"{pos.current_price:,.6f}"))
+            table.setItem(i, 4, QTableWidgetItem(f"{pos.quantity:,.6f}"))
+            pnl_item = QTableWidgetItem(f"{pos.unrealized_pnl_usd:+,.4f}")
+            pnl_item.setForeground(QBrush(QColor("#2e7d32" if pos.unrealized_pnl_usd >= 0 else "#c62828")))
+            table.setItem(i, 5, pnl_item)
+
+    def _render_price_ticker(self, price: float) -> None:
+        """Kağıt işlemin çalıştığı sembolün güncel fiyatını, bir önceki
+        güncellemeye göre yön/renkle (yükseldiyse yeşil ▲, düştüyse kırmızı ▼)
+        gösterir -- her ~POLL_INTERVAL_SECONDS'ta bir tazelenir (bkz.
+        app.grid_trading.paper_trading._report_live_price/_on_paper_snapshot).
+        Bu sadece kağıt işlem için anlamlı (backtest 'canlı' değildir)."""
+        previous = self._paper_last_ticker_price
+        if previous is None or price == previous:
+            color, arrow = "#333333", ""
+        elif price > previous:
+            color, arrow = "#2e7d32", " ▲"
+        else:
+            color, arrow = "#c62828", " ▼"
+        self._paper_last_ticker_price = price
+        self.paper_price_ticker_label.setText(
+            f"<span style='color:{color}; font-weight:bold; font-size:14pt;'>{price:,.6f}{arrow}</span>"
+        )
+
     # ---- 4. Kağıt İşlem (İleri Test) --------------------------------------
 
     def _build_paper_trading_section(self) -> QVBoxLayout:
@@ -828,12 +878,30 @@ class GridTab(QWidget):
         self.paper_summary_label.setWordWrap(True)
         section.addWidget(self.paper_summary_label)
 
+        # "Açık Pozisyonlar" başlığıyla AYNI satırda, sağ köşede sembolün canlı
+        # fiyatı gösterilir (bkz. _render_price_ticker) -- önceki güncellemeye
+        # göre yükseldiyse yeşil+▲, düştüyse kırmızı+▼ (bkz. kullanıcı talebi).
+        open_positions_header = QHBoxLayout()
+        open_positions_header.addWidget(QLabel("<b>Açık Pozisyonlar</b>"))
+        open_positions_header.addStretch()
+        self.paper_price_ticker_label = QLabel("—")
+        open_positions_header.addWidget(self.paper_price_ticker_label)
+        section.addLayout(open_positions_header)
+
+        self.paper_open_positions_table = QTableWidget(0, 6)
+        self.paper_open_positions_table.setHorizontalHeaderLabels(
+            ["Alış Zamanı", "Alış Fiyatı", "Hedef Satış", "Güncel Fiyat", "Miktar", "Anlık K/Z (USD)"]
+        )
+        self.paper_open_positions_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        section.addWidget(self.paper_open_positions_table)
+
         self.paper_chart = QChart()
         self.paper_chart.legend().hide()
         self.paper_chart_view = QChartView(self.paper_chart)
         self.paper_chart_view.setFixedHeight(320)
         section.addWidget(self.paper_chart_view)
 
+        section.addWidget(QLabel("<b>Tamamlanan İşlemler</b>"))
         self.paper_trade_table = QTableWidget(0, 6)
         self.paper_trade_table.setHorizontalHeaderLabels(
             ["Alış Zamanı", "Alış Fiyatı", "Satış Zamanı", "Satış Fiyatı", "Miktar", "Net K/Z (USD)"]
@@ -857,7 +925,10 @@ class GridTab(QWidget):
         self.paper_setup_label.setText("—")
         self.paper_status_label.setText("Başlatılıyor…")
         self.paper_summary_label.setText("—")
+        self.paper_open_positions_table.setRowCount(0)
         self.paper_trade_table.setRowCount(0)
+        self.paper_price_ticker_label.setText("—")
+        self._paper_last_ticker_price = None
         self._paper_result = None
 
         self._paper_thread = GridPaperTradingThread(
@@ -923,6 +994,8 @@ class GridTab(QWidget):
         self._paper_result = result
         interval_label = BACKTEST_INTERVAL_LABELS.get(self.backtest_interval_combo.currentData(), "")
         self._render_grid_summary(self.paper_summary_label, result)
+        self._render_price_ticker(result.end_price)
+        self._render_open_positions(self.paper_open_positions_table, result)
         self._render_grid_trades(self.paper_trade_table, result)
         self._render_grid_chart(self.paper_chart, candles, result, f"Kağıt İşlem — {interval_label}")
 

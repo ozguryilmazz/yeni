@@ -8,7 +8,7 @@ from PySide6.QtCore import QDateTime
 from PySide6.QtGui import QGuiApplication
 
 from app.backtest.engine import Candle
-from app.grid_trading.grid import GridBacktestResult, GridFill, GridLiquidation, GridTrade
+from app.grid_trading.grid import GridBacktestResult, GridFill, GridLiquidation, GridTrade, OpenGridPosition
 from app.grid_trading.range_methods import GridRange
 from app.grid_trading.screener import CandidateResult
 from app.grid_trading.service import BacktestPreview, RangePreview
@@ -33,9 +33,13 @@ def _candidate(symbol: str, passes: bool, **overrides) -> CandidateResult:
 
 
 def _grid_backtest_result(
-    trades: list[GridTrade] | None = None, liquidation: GridLiquidation | None = None
+    trades: list[GridTrade] | None = None,
+    liquidation: GridLiquidation | None = None,
+    open_positions: list[OpenGridPosition] | None = None,
+    end_price: float = 90.0,
 ) -> GridBacktestResult:
     trades = trades or []
+    open_positions = open_positions or []
     total_pnl = -400.0 if liquidation else sum(t.net_pnl_usd for t in trades) - 1.5
     return GridBacktestResult(
         grid_levels=[90.0, 95.0, 100.0, 105.0, 110.0],
@@ -53,13 +57,14 @@ def _grid_backtest_result(
         final_inventory_qty=0.0 if liquidation else 1.0,
         final_inventory_value_usd=0.0 if liquidation else 90.0,
         start_price=100.0,
-        end_price=90.0,
+        end_price=end_price,
         min_price_seen=88.0,
         max_price_seen=100.0,
         breached_lower=True,
         breached_upper=False,
         open_buy_levels=[],
         open_sell_levels=[] if liquidation else [95.0],
+        open_positions=open_positions,
         liquidated=liquidation is not None,
         liquidation=liquidation,
     )
@@ -313,6 +318,7 @@ def test_successful_backtest_renders_summary_trade_table_and_chart(qapp):
     assert "ALT sınırın altına indi" in tab.backtest_summary_label.text()
     assert "ÜST sınırın üstüne çıktı" not in tab.backtest_summary_label.text()
     assert "LİKİDE OLDU" not in tab.backtest_summary_label.text()
+    assert tab.backtest_open_positions_table.rowCount() == 0  # fixture'da açık pozisyon yok
     assert tab.grid_trade_table.rowCount() == 1
     assert tab.grid_trade_table.item(0, 1).text() == "90.000000"
 
@@ -320,6 +326,22 @@ def test_successful_backtest_renders_summary_trade_table_and_chart(qapp):
     # referans çizgisi (likidasyon) eklenmemeli.
     assert len(tab.backtest_chart.series()) == 1 + 3 + 2
     assert "15 Dakika" in tab.backtest_chart.title()
+
+
+def test_backtest_finished_renders_open_positions_table(qapp):
+    position = OpenGridPosition(
+        buy_price=90.0, buy_time_ms=0, sell_price=95.0, quantity=1.0, current_price=92.0, unrealized_pnl_usd=1.5
+    )
+    result = _grid_backtest_result(open_positions=[position], end_price=92.0)
+    preview = BacktestPreview(result=result, candles=_backtest_candles())
+
+    tab = GridTab()
+    tab._on_backtest_finished(preview)
+
+    assert tab.backtest_open_positions_table.rowCount() == 1
+    assert tab.backtest_open_positions_table.item(0, 1).text() == "90.000000"  # Alış Fiyatı
+    assert tab.backtest_open_positions_table.item(0, 3).text() == "92.000000"  # Güncel Fiyat
+    assert tab.backtest_open_positions_table.item(0, 5).text() == "+1.5000"  # Anlık K/Z
 
 
 def test_liquidated_backtest_shows_warning_and_liquidation_chart_line(qapp):
@@ -482,6 +504,62 @@ def test_paper_snapshot_renders_summary_chart_and_trades(qapp):
     assert tab.paper_trade_table.item(0, 1).text() == "90.000000"
     assert len(tab.paper_chart.series()) == 1 + 3 + 2
     assert "Kağıt İşlem" in tab.paper_chart.title()
+
+
+def test_paper_snapshot_renders_open_positions_table(qapp):
+    position = OpenGridPosition(
+        buy_price=90.0, buy_time_ms=0, sell_price=95.0, quantity=1.0, current_price=92.0, unrealized_pnl_usd=1.5
+    )
+    result = _grid_backtest_result(open_positions=[position], end_price=92.0)
+    candles = _backtest_candles()
+
+    tab = GridTab()
+    tab._on_paper_snapshot(result, candles)
+
+    assert tab.paper_open_positions_table.rowCount() == 1
+    assert tab.paper_open_positions_table.item(0, 1).text() == "90.000000"  # Alış Fiyatı
+    assert tab.paper_open_positions_table.item(0, 2).text() == "95.000000"  # Hedef Satış
+    assert tab.paper_open_positions_table.item(0, 3).text() == "92.000000"  # Güncel Fiyat
+    assert tab.paper_open_positions_table.item(0, 5).text() == "+1.5000"  # Anlık K/Z
+
+
+def test_paper_snapshot_price_ticker_shows_direction_and_color(qapp):
+    tab = GridTab()
+    candles = _backtest_candles()
+
+    # İlk güncelleme: karşılaştırılacak önceki fiyat yok -- nötr (oksuz) gösterilmeli.
+    tab._on_paper_snapshot(_grid_backtest_result(end_price=100.0), candles)
+    assert "100.000000" in tab.paper_price_ticker_label.text()
+    assert "▲" not in tab.paper_price_ticker_label.text()
+    assert "▼" not in tab.paper_price_ticker_label.text()
+
+    # Fiyat YÜKSELDİ: yeşil + yukarı ok.
+    tab._on_paper_snapshot(_grid_backtest_result(end_price=101.0), candles)
+    assert "▲" in tab.paper_price_ticker_label.text()
+    assert "#2e7d32" in tab.paper_price_ticker_label.text()
+
+    # Fiyat DÜŞTÜ: kırmızı + aşağı ok.
+    tab._on_paper_snapshot(_grid_backtest_result(end_price=99.0), candles)
+    assert "▼" in tab.paper_price_ticker_label.text()
+    assert "#c62828" in tab.paper_price_ticker_label.text()
+
+
+def test_start_paper_trading_resets_open_positions_table_and_price_ticker(qapp):
+    tab = GridTab()
+    position = OpenGridPosition(
+        buy_price=90.0, buy_time_ms=0, sell_price=95.0, quantity=1.0, current_price=92.0, unrealized_pnl_usd=1.5
+    )
+    tab._on_paper_snapshot(_grid_backtest_result(open_positions=[position], end_price=92.0), _backtest_candles())
+    assert tab.paper_open_positions_table.rowCount() == 1
+    assert tab._paper_last_ticker_price == pytest.approx(92.0)
+
+    tab.symbol_input.setText("BTCUSDT")
+    with patch("app.ui.grid_tab.GridPaperTradingThread", return_value=MagicMock()):
+        tab._handle_start_paper_trading()
+
+    assert tab.paper_open_positions_table.rowCount() == 0
+    assert tab.paper_price_ticker_label.text() == "—"
+    assert tab._paper_last_ticker_price is None
 
 
 def test_paper_liquidated_shows_warning(qapp):

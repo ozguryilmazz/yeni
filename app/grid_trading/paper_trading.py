@@ -194,6 +194,7 @@ class GridPaperTradingEngine:
             # yerel saate (time.time()) ihtiyaç yok. Bu, makinenin saati Binance
             # sunucu saatinden kaysa bile (ör. NTP senkronu bozuksa) doğru çalışır;
             # eski kod close_time_ms<=now_ms ile yerel saate kıyaslıyordu.
+            candle_closed = False
             for k in raw_klines[:-1]:
                 open_time_ms = int(k[0])
                 if self._last_closed_open_time_ms is not None and open_time_ms <= self._last_closed_open_time_ms:
@@ -208,6 +209,7 @@ class GridPaperTradingEngine:
                 )
                 self._last_closed_open_time_ms = open_time_ms
                 self._on_candle_closed(candle)
+                candle_closed = True
 
             # Yüksek zaman dilimlerinde (1h/4h/1d) ilk mum kapanana kadar uzunca
             # bir süre hiçbir güncelleme olmaması kullanıcıya botun takıldığı
@@ -217,6 +219,15 @@ class GridPaperTradingEngine:
             # (stop_event set edildiyse) o mesajın üzerine yazılmaz.
             if raw_klines and not stop_event.is_set():
                 self._update_waiting_status(raw_klines[-1])
+                # Bu turda bir mum ZATEN kapandıysa _on_candle_closed kendi
+                # snapshot'ını yayınladı -- burada TEKRAR yayınlamaya gerek yok.
+                # Kapanmadıysa (ki poll aralığı mum aralığından çok daha kısa
+                # olduğundan turların BÜYÜK çoğunluğu bu durumdadır), güncel
+                # fiyatı/açık pozisyonların anlık K/Z'ını yine de tazelemek
+                # için o an oluşan mumun SON fiyatıyla bir snapshot yayınlanır
+                # (bkz. kullanıcı talebi: fiyat/K/Z ~5 saniyede bir güncellensin).
+                if not candle_closed:
+                    self._report_live_price(raw_klines[-1])
 
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=POLL_INTERVAL_SECONDS)
@@ -230,6 +241,15 @@ class GridPaperTradingEngine:
             f"{self.symbol} {self.interval} mum kapanışları izleniyor… "
             f"(sıradaki kapanış: ~{_format_remaining_time(remaining_ms)})"
         )
+
+    def _report_live_price(self, forming_kline: list) -> None:
+        """Yeni bir mum kapanmasa bile, o an oluşmakta olan mumun SON fiyatıyla
+        bir snapshot yayınlar -- fiyat göstergesi ve açık pozisyonların anlık
+        (mark-to-market) K/Z'ı, sadece mum kapanışlarında değil her poll
+        turunda (~POLL_INTERVAL_SECONDS'ta bir) tazelensin diye."""
+        live_price = float(forming_kline[4])
+        live_time_ms = int(forming_kline[0])
+        self.on_snapshot(snapshot_grid_engine(self._state, live_price, live_time_ms), list(self._candles))
 
     def _on_candle_closed(self, candle: Candle) -> None:
         self._candles.append(candle)

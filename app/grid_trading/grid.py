@@ -84,6 +84,25 @@ class GridLiquidation:
 
 
 @dataclass
+class OpenGridPosition:
+    """Şu an elde tutulan (henüz SATILMAMIŞ) TEK bir grid hücresi --
+    state.pending_sells'teki her giriş bir tanedir. current_price/
+    unrealized_pnl_usd, snapshot_grid_engine'e verilen last_price'a göre o
+    anki mark-to-market değeridir -- pozisyon gerçekten satılana kadar
+    gerçekleşmemiştir. Tüm open_positions'ların unrealized_pnl_usd toplamı,
+    GridBacktestResult.unrealized_pnl_usd'ye eşittir (aynı hesabın kalemlere
+    ayrılmış hali)."""
+
+    buy_price: float
+    buy_time_ms: int
+    sell_price: float
+    """Bu hücrenin dolması BEKLENEN hedef grid seviyesi (henüz dolmadı)."""
+    quantity: float
+    current_price: float
+    unrealized_pnl_usd: float
+
+
+@dataclass
 class GridBacktestResult:
     grid_levels: list[float]
     trades: list[GridTrade]
@@ -119,6 +138,11 @@ class GridBacktestResult:
     """Fiyat, backtest sırasında en az bir kez üst sınırın (grid_levels[-1]) üstüne çıktı mı."""
     open_buy_levels: list[float]
     open_sell_levels: list[float]
+    open_positions: list[OpenGridPosition]
+    """open_sell_levels ile AYNI hücreleri temsil eder, ama sadece hedef seviye
+    değil alış fiyatı/zamanı ve o anki mark-to-market K/Z'ıyla birlikte --
+    UI'da her açık pozisyonu ayrı satır olarak listelemek için (bkz.
+    app.ui.grid_tab._render_open_positions)."""
     liquidated: bool
     liquidation: GridLiquidation | None
 
@@ -248,6 +272,22 @@ def snapshot_grid_engine(state: GridEngineState, last_price: float, last_time_ms
 
     total_pnl_usd = -state.capital_usd if state.liquidation else realized_pnl_usd + unrealized_pnl_usd
 
+    open_positions = [
+        OpenGridPosition(
+            buy_price=buy_price,
+            buy_time_ms=buy_time_ms,
+            sell_price=state.levels[level_index],
+            quantity=state.qty_per_grid,
+            current_price=end_price,
+            unrealized_pnl_usd=(
+                state.qty_per_grid * end_price - buy_price * state.qty_per_grid * (1 + state.fee_rate)
+            ),
+        )
+        for level_index, (buy_price, buy_time_ms) in sorted(
+            state.pending_sells.items(), key=lambda item: state.levels[item[0]]
+        )
+    ]
+
     return GridBacktestResult(
         grid_levels=state.levels,
         trades=list(state.trades),
@@ -271,6 +311,7 @@ def snapshot_grid_engine(state: GridEngineState, last_price: float, last_time_ms
         breached_upper=state.max_price_seen >= state.levels[-1],
         open_buy_levels=sorted(state.levels[i] for i in state.pending_buys),
         open_sell_levels=sorted(state.levels[i] for i in state.pending_sells),
+        open_positions=open_positions,
         liquidated=state.liquidation is not None,
         liquidation=state.liquidation,
     )

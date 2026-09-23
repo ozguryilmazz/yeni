@@ -399,6 +399,21 @@ def test_update_waiting_status_reports_remaining_time_until_forming_candle_close
     assert "sıradaki kapanış" in calls["status"][0]
 
 
+def test_report_live_price_emits_snapshot_with_forming_candle_price_without_appending_candle():
+    engine, calls = _started_engine()
+    forming_kline = _kline(123_000, 99.0, 101.0, 98.0, 103.5, close_time_ms=0)
+
+    engine._report_live_price(forming_kline)
+
+    assert len(calls["snapshot"]) == 1
+    result, candles = calls["snapshot"][0]
+    assert result.end_price == pytest.approx(103.5)
+    assert candles == []  # canlı fiyat güncellemesi gerçek bir mum EKLEMEZ
+    # Açık pozisyonların anlık K/Z'ı da bu YENİ (canlı) fiyata göre yeniden hesaplanmalı.
+    assert result.open_positions
+    assert all(p.current_price == pytest.approx(103.5) for p in result.open_positions)
+
+
 def test_poll_loop_updates_waiting_status_with_countdown_after_processing():
     engine, calls = _started_engine()
     now_ms = int(time.time() * 1000)
@@ -423,9 +438,14 @@ def test_poll_loop_updates_waiting_status_with_countdown_after_processing():
 
     asyncio.run(scenario())
 
-    assert calls["snapshot"] == []  # henüz kapanmadı
     assert len(calls["status"]) == 1
     assert "sıradaki kapanış" in calls["status"][0]
+    # Henüz gerçek bir mum kapanmadı ama (bkz. _report_live_price) güncel
+    # fiyat yine de o an oluşan mumun son fiyatıyla (100.5) tazelenmeli.
+    assert len(calls["snapshot"]) == 1
+    result, candles = calls["snapshot"][0]
+    assert result.end_price == pytest.approx(100.5)
+    assert candles == []  # henüz gerçek/kapanmış mum yok
 
 
 def test_poll_loop_skips_waiting_status_when_no_klines_returned():
