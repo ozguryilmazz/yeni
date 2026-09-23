@@ -144,7 +144,27 @@ class GridPaperTradingEngine:
         ]
         self.on_snapshot(snapshot_grid_engine(self._state, reference_price, reference_time_ms), placeholder_candles)
 
+        self._prime_last_closed_candle()
         await self._poll_loop(stop_event)
+
+    def _prime_last_closed_candle(self) -> None:
+        """REST polling, WebSocket akışından FARKLI olarak sadece 'yeni' değil
+        GEÇMİŞ (paper trading başlamadan ÖNCE zaten kapanmış) mumları da döner.
+        _poll_loop ilk turunda self._last_closed_open_time_ms hâlâ None ise, o
+        turda dönen TÜM kapanmış mumları 'yeni kapandı' sayıp motora işler --
+        bu da kağıt işlem daha canlıda hiçbir fiyat görmeden, geçmiş fiyat
+        hareketiyle anında ('zamanda geriye dönük') dolumlar oluşturur. Bunu
+        önlemek için burada watermark'ı, HİÇBİR mumu motora işlemeden, şu ana
+        kadar zaten kapanmış son muma göre önceden ayarlıyoruz -- motor, ilk
+        gerçek kapanışla tıpkı WebSocket akışındaki gibi başlar."""
+        try:
+            now_ms = int(time.time() * 1000)
+            raw_klines = get_futures_recent_klines(self.symbol, self.interval, limit=2)
+            closed = [k for k in raw_klines if int(k[6]) <= now_ms]
+            if closed:
+                self._last_closed_open_time_ms = int(closed[-1][0])
+        except Exception as exc:  # noqa: BLE001 - ağ hatası; ilk poll turu kendi hatasını raporlayıp yine de devam eder
+            self.on_status(f"Başlangıç mumu belirlenemedi, ilk pollda tekrar denenecek: {exc}")
 
     async def _poll_loop(self, stop_event: asyncio.Event) -> None:
         """WebSocket akışı yerine REST polling: her POLL_INTERVAL_SECONDS

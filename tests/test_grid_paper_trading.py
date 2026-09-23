@@ -127,16 +127,18 @@ def test_run_sets_up_grid_at_reference_price_and_emits_initial_snapshot():
 
     async def scenario():
         stop_event = asyncio.Event()
-        stop_event.set()  # _poll_loop hemen dönsün -- gerçek REST isteği hiç yapılmaz
+        stop_event.set()  # _poll_loop hemen dönsün -- polling turu hiç başlamaz
         with (
             patch(
                 "app.grid_trading.paper_trading.get_futures_kline_stats",
                 return_value={"last_price": 100.0},
             ),
-            patch("app.grid_trading.paper_trading.get_futures_recent_klines") as mock_recent_klines,
+            patch("app.grid_trading.paper_trading.get_futures_recent_klines", return_value=[]) as mock_recent_klines,
         ):
             await engine.run(stop_event)
-        mock_recent_klines.assert_not_called()
+        # _prime_last_closed_candle watermark'ı belirlemek için bir kez çağrılır
+        # (geçmiş mum motora işlenmeden) -- asıl polling döngüsü ise hiç başlamaz.
+        mock_recent_klines.assert_called_once_with("BTCUSDT", "5m", limit=2)
 
     asyncio.run(scenario())
 
@@ -167,6 +169,74 @@ def test_run_sets_up_grid_at_reference_price_and_emits_initial_snapshot():
     assert candles[1].open_time_ms > candles[0].open_time_ms
     assert result.grid_levels[0] == pytest.approx(90.0)
     assert result.grid_levels[-1] == pytest.approx(110.0)
+
+
+def test_prime_last_closed_candle_sets_watermark_without_feeding_engine():
+    engine, calls = _started_engine()
+    now_ms = int(time.time() * 1000)
+    already_closed = _kline(0, 100.0, 101.0, 99.0, 100.5, close_time_ms=now_ms - 1000)
+    still_forming = _kline(300_000, 100.5, 102.0, 100.0, 101.0, close_time_ms=now_ms + 999_000)
+
+    with patch(
+        "app.grid_trading.paper_trading.get_futures_recent_klines",
+        return_value=[already_closed, still_forming],
+    ) as mock_recent_klines:
+        engine._prime_last_closed_candle()
+
+    mock_recent_klines.assert_called_once_with("BTCUSDT", "5m", limit=2)
+    # Watermark, halihazırda kapanmış son muma (henüz oluşmakta olana değil) ayarlanmalı --
+    # ama bu mum motora İŞLENMEMELİ (paper trading başlamadan önceki geçmiş fiyat hareketi
+    # sanki canlıymış gibi hemen dolum oluşturmamalı).
+    assert engine._last_closed_open_time_ms == 0
+    assert calls["snapshot"] == []
+    assert calls["liquidated"] == []
+
+
+def test_prime_last_closed_candle_reports_status_on_fetch_error_without_crashing():
+    engine, calls = _started_engine()
+
+    with patch(
+        "app.grid_trading.paper_trading.get_futures_recent_klines",
+        side_effect=RuntimeError("network kaboom"),
+    ):
+        engine._prime_last_closed_candle()
+
+    assert engine._last_closed_open_time_ms is None
+    assert len(calls["status"]) == 1
+    assert "network kaboom" in calls["status"][0]
+
+
+def test_poll_loop_after_priming_only_processes_candles_closed_after_watermark():
+    # Regresyon testi: watermark None iken _poll_loop'un ilk turu, paper trading
+    # başlamadan ÖNCE zaten kapanmış geçmiş mumları da 'yeni' sayıp işlerdi --
+    # bu da anında, canlıda hiç görülmemiş fiyat hareketiyle dolum oluşturuyordu.
+    # _prime_last_closed_candle çağrıldıktan SONRA _poll_loop çalıştırılırsa, aynı
+    # (zaten kapanmış) geçmiş mum bir daha işlenmemeli.
+    engine, calls = _started_engine()
+    now_ms = int(time.time() * 1000)
+    already_closed = _kline(0, 100.0, 101.0, 99.0, 100.5, close_time_ms=now_ms - 1000)
+
+    with patch(
+        "app.grid_trading.paper_trading.get_futures_recent_klines",
+        return_value=[already_closed],
+    ):
+        engine._prime_last_closed_candle()
+
+    assert engine._last_closed_open_time_ms == 0
+
+    async def scenario():
+        stop_event = asyncio.Event()
+
+        def fake_recent_klines(symbol, interval, limit):
+            stop_event.set()
+            return [already_closed]  # aynı mum -- artık 'daha önce işlendi' sayılmalı
+
+        with patch("app.grid_trading.paper_trading.get_futures_recent_klines", side_effect=fake_recent_klines):
+            await engine._poll_loop(stop_event)
+
+    asyncio.run(scenario())
+
+    assert calls["snapshot"] == []  # geçmiş mum tekrar işlenmedi
 
 
 def test_poll_loop_processes_closed_candle_and_ignores_still_forming_one():
