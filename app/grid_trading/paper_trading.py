@@ -96,7 +96,18 @@ class GridPaperTradingEngine:
             self.on_error(f"Başlangıç fiyatı alınamadı: {exc}")
             return
 
-        reference_time_ms = int(time.time() * 1000)
+        # Binance kline'ları için fills/trades HER ZAMAN candle.open_time_ms ile
+        # damgalanır (bkz. app.grid_trading.grid) -- bir mum, GERÇEKTE kapandığı
+        # andan (open_time + interval kadar SONRA) değil, kendi AÇILIŞ anından
+        # etiketlenir. Kurulumda seed'lenen envanterin 'alış zamanı' ise ham
+        # time.time() (an itibarıyla 'şimdi') kullanılırsa, bu iki farklı zaman
+        # tabanı en fazla bir mum aralığı kadar birbirinden kayar -- setup'tan
+        # SONRA gerçekleşen bir satış bile, tetikleyen mumun açılışı setup
+        # anından ÖNCEYSE ekranda 'satış, alıştan önce' gibi görünür (yanıltıcı
+        # ama YANLIŞ değil). Bunu önlemek için referans zamanı da aynı
+        # kapanmamış mumun açılışına -- güncel dilim sınırına -- yuvarlanır.
+        interval_ms = INTERVAL_MS_MAP[self.interval]
+        reference_time_ms = (int(time.time() * 1000) // interval_ms) * interval_ms
         try:
             self._state = start_grid_engine(
                 reference_price, reference_time_ms, self.lower_price, self.upper_price, self.grid_count,
@@ -125,7 +136,6 @@ class GridPaperTradingEngine:
         # düz (open=high=low=close) iki 'yer tutucu' mum kullanılır -- bunlar sadece
         # çizim ekseni için bir zaman aralığı sağlar, self._candles'a EKLENMEZ (ilk
         # gerçek mum geldiğinde grafik sahte veri karışmadan gerçek veriye geçer)."""
-        interval_ms = INTERVAL_MS_MAP[self.interval]
         placeholder_candles = [
             Candle(
                 open_time_ms=reference_time_ms,

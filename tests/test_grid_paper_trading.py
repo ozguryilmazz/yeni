@@ -171,6 +171,37 @@ def test_run_sets_up_grid_at_reference_price_and_emits_initial_snapshot():
     assert result.grid_levels[-1] == pytest.approx(110.0)
 
 
+def test_run_floors_reference_time_to_current_interval_boundary():
+    # app.grid_trading.grid, TÜM fill/trade zaman damgaları için candle.open_time_ms
+    # kullanır (bir mum, gerçekte kapandığı andan değil kendi AÇILIŞ anından
+    # etiketlenir). Kurulumda seed'lenen envanterin 'alış zamanı' ham time.time()
+    # ('şimdi') olsaydı, bu iki farklı zaman tabanı bir mum aralığı kadar kayardı --
+    # setup'tan SONRA gerçekleşen bir satış bile ekranda 'satıştan sonra alınmış'
+    # gibi yanıltıcı görünürdü. reference_time_ms bu yüzden dilim sınırına
+    # yuvarlanmalı -- tıpkı gerçek mumların open_time'ı gibi.
+    engine, _ = _make_engine(interval="5m")
+    fake_now_s = 1_700_000_137.456  # dilim sınırında DEĞİL (bilerek)
+    interval_ms = 300_000  # "5m"
+
+    async def scenario():
+        stop_event = asyncio.Event()
+        stop_event.set()
+        with (
+            patch("app.grid_trading.paper_trading.get_futures_kline_stats", return_value={"last_price": 100.0}),
+            patch("app.grid_trading.paper_trading.get_futures_recent_klines", return_value=[]),
+            patch("time.time", return_value=fake_now_s),
+        ):
+            await engine.run(stop_event)
+
+    asyncio.run(scenario())
+
+    now_ms = int(fake_now_s * 1000)
+    assert engine._state.start_time_ms % interval_ms == 0
+    # Yuvarlanan sınır, 'şimdi'yi İÇEREN dilimin başlangıcı olmalı -- ne daha
+    # eski bir dilim, ne de henüz gelmemiş bir gelecek dilim.
+    assert engine._state.start_time_ms <= now_ms < engine._state.start_time_ms + interval_ms
+
+
 def test_prime_last_closed_candle_sets_watermark_without_feeding_engine():
     engine, calls = _started_engine()
     now_ms = int(time.time() * 1000)
