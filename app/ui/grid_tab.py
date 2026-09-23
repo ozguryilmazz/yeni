@@ -755,6 +755,10 @@ class GridTab(QWidget):
             f"<b>Toplam Komisyon:</b> {result.fees_usd:,.4f}$ "
             f"({result.leverage:g}x kaldıraç, %{result.fee_rate * 100:g} komisyon, "
             f"%{result.maintenance_margin_rate * 100:g} bakım marjini oranıyla)",
+            "<span style='color:#666;'>Not: Toplam K/Z = Gerçekleşen K/Z + Envanter K/Z'dir. Tamamlanan "
+            "işlemler kârlı olsa bile, henüz SATILMAMIŞ (elde tutulan) envanter GÜNCEL fiyata göre anlık "
+            "değerlenir — piyasa kurulumdan/son satıştan beri düştüyse bu rakam eksi görünür, fiyat "
+            "toparlanırsa iyileşir; bu envanter satılana kadar gerçekleşmemiş bir zarar/kârdır.</span>",
             f"<b>Grid Aralığı:</b> {result.grid_levels[0]:,.6f} - {result.grid_levels[-1]:,.6f} "
             f"({len(result.grid_levels) - 1} grid) &nbsp; "
             f"<b>Başlangıç/Bitiş Fiyatı:</b> {result.start_price:,.6f} / {result.end_price:,.6f}",
