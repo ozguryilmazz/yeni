@@ -18,7 +18,7 @@ DEFAULT_RANGE_INTERVAL = "4h"
 DEFAULT_RANGE_LOOKBACK_CANDLES = 120
 """ATR(14)/Bollinger(20)/destek-direnç kümelemesi için yeterden fazla ısınma
 mumu; 4h'de ~20 gün, 1d'de ~4 ay geçmiş."""
-SUPPORTED_GRID_INTERVALS = ["5m", "15m", "1h", "4h"]
+SUPPORTED_GRID_INTERVALS = ["1m", "5m", "15m", "1h", "4h"]
 DEFAULT_GRID_BACKTEST_INTERVAL = "15m"
 DEFAULT_CAPITAL_USD = 1000.0
 

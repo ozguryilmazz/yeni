@@ -54,7 +54,13 @@ from app.ui.widgets import make_info_label
 from app.workers import ComputeGridRangeWorker, RunGridBacktestWorker, RunGridScreenerWorker
 
 RANGE_INTERVAL_LABELS = {"4h": "4 Saatlik", "1d": "Günlük"}
-BACKTEST_INTERVAL_LABELS = {"5m": "5 Dakika", "15m": "15 Dakika", "1h": "1 Saat", "4h": "4 Saatlik"}
+BACKTEST_INTERVAL_LABELS = {
+    "1m": "1 Dakika",
+    "5m": "5 Dakika",
+    "15m": "15 Dakika",
+    "1h": "1 Saat",
+    "4h": "4 Saatlik",
+}
 FAILED_REASON_LABELS = {
     "futures_volume": "Futures Hacim",
     "volatility": "Volatilite (ATR%)",
